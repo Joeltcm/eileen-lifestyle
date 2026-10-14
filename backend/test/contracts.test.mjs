@@ -177,7 +177,7 @@ test('contrato informativo distinto del cobro no modifica expediente, conceptos,
   assert.equal(preview.canSend, true); assert.match(preview.warnings.join(' '), /contrato dice \$333\.00.*cobra \$280\.00/i);
   const contract = ok(await api.post('/api/clients/' + s.client.id + '/contracts', { ...terms, send: true }));
   const signed = ok(await s.portal.post('/api/contracts/' + contract.id + '/sign', await signedBody(s.client.full_name)), 200);
-  assert.equal(signed.template_version, 4, "plantilla vigente: v4 sin cláusula de feriados");
+  assert.equal(signed.template_version, 5, "plantilla vigente: v5 sin cláusula de feriados ni mención a IA/fotos");
   assert.deepEqual(await commercialSnapshot(s.client.id), before);
   const pdf = await fetch(server.base + '/api/contracts/' + contract.id + '/pdf', { headers: { Authorization: 'Bearer ' + s.portalToken } });
   const text = pdfText(Buffer.from(await pdf.arrayBuffer()));

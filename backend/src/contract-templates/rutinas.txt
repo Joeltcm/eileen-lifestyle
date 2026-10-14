@@ -10,7 +10,7 @@ En {{CONTRACT_CITY}}, el {{START_DATE}}, entre {{OWNER_LEGAL_NAME}}, identificac
 
 4. Uso responsable. Los videos son de uso personal y se usan como guía. La persona declara que informó sus condiciones de salud, registradas en su expediente, y comunicará cambios; seguirá las indicaciones y se detendrá ante dolor o malestar. El entrenamiento no sustituye atención médica. Reconoce los riesgos del ejercicio sin excluir responsabilidades que la ley no permita excluir.
 
-5. Datos. El tratamiento de datos se realiza conforme a la Ley 81 de 2019 de Panamá. La aplicación usa un servicio externo de inteligencia artificial para proponer rutinas e interpretar evaluaciones. Las fotos de progreso solo se usan con consentimiento aparte.
+5. Datos. El tratamiento de datos se realiza conforme a la Ley 81 de 2019 de Panamá.
 
 6. Información de facturación. Este contrato describe el servicio acordado; los cobros se emiten conforme a la facturación vigente del cliente. Firmarlo no modifica por sí mismo conceptos de facturación, facturas emitidas ni saldos.
 

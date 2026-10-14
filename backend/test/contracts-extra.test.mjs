@@ -47,6 +47,8 @@ test('los contratos no llevan cláusula de feriados (Joel la omitió) ni ningún
   const s = await escenario();
   const preview = ok(await api.post(`/api/clients/${s.client.id}/contracts/preview`, { templateKey: 'mensualidad', quantity: 8, price: 200, rescheduleFrom: '08:00', rescheduleTo: '12:00' }), 200);
   assert.doesNotMatch(preview.bodyText, /feriado|\[pendiente|\{\{/i);
+  assert.doesNotMatch(preview.bodyText, /inteligencia artificial|fotos de progreso/i, 'sin mención a IA ni a fotos de progreso');
+  assert.match(preview.bodyText, /Ley 81 de 2019/, 'se conserva la referencia a la ley de datos');
   assert.match(preview.bodyText, /Rutina sustitutiva\./);
   assert.ok(!(preview.warnings || []).some(w => /feriado/i.test(w)), 'sin avisos de feriados');
 });
