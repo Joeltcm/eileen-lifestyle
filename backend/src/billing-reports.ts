@@ -57,7 +57,22 @@ function pdfBuffer(draw: (document: PDFKit.PDFDocument) => void, createdAt?: Dat
 
 /** Documento interno de contrato. El texto ya fue congelado por el servidor;
  * este helper solo lo presenta, no vuelve a consultar ni recalcula el contrato. */
-export function contractPdf(input: { title: string; subtitle: string; body: string; createdAt?: Date | string }) {
+type ContractSignatureBox = {
+  name: string;
+  legalId?: string | null;
+  image?: Buffer | null;
+  signedAt?: string | null;
+  method?: 'portal' | 'presencial' | 'papel' | null;
+  role: 'Eileen' | 'Cliente' | 'Representante legal';
+};
+
+export function contractPdf(input: {
+  title: string;
+  subtitle: string;
+  body: string;
+  createdAt?: Date | string;
+  signatures?: { owner: ContractSignatureBox; client: ContractSignatureBox };
+}) {
   return pdfBuffer(document => {
     brandHeader(document, input.title, input.subtitle);
     input.body.split('\n').forEach(line => {
@@ -67,6 +82,33 @@ export function contractPdf(input: { title: string; subtitle: string; body: stri
       document.text(line || ' ', 42, document.y, { width: document.page.width - 84, lineGap: 3 });
       document.y += line ? 5 : 2;
     });
+    if (input.signatures) {
+      ensureSpace(document, 190, 'Firmas del contrato');
+      document.y += 10;
+      document.font('Helvetica-Bold').fontSize(11).fillColor(colors.ink).text('FIRMAS', 42, document.y);
+      document.y += 20;
+      const gap = 18; const width = (document.page.width - 84 - gap) / 2; const top = document.y;
+      const boxes = [input.signatures.owner, input.signatures.client];
+      boxes.forEach((signature, index) => {
+        const x = 42 + index * (width + gap);
+        document.save().roundedRect(x, top, width, 145, 8).lineWidth(1).strokeColor(colors.line).stroke().restore();
+        document.font('Helvetica-Bold').fontSize(8).fillColor(colors.muted).text(signature.role.toUpperCase(), x + 10, top + 10, { width: width - 20 });
+        if (signature.image) {
+          try { document.image(signature.image, x + 12, top + 29, { fit: [width - 24, 58], align: 'center', valign: 'center' }); }
+          catch { document.font('Helvetica').fontSize(8).fillColor(colors.muted).text('Firma no disponible', x + 12, top + 50, { width: width - 24, align: 'center' }); }
+        } else {
+          document.save().rect(x + 12, top + 29, width - 24, 58).dash(3, { space: 2 }).strokeColor(colors.line).stroke().undash().restore();
+          document.font('Helvetica').fontSize(8).fillColor(colors.muted).text('Pendiente de firma', x + 12, top + 53, { width: width - 24, align: 'center' });
+        }
+        document.font('Helvetica-Bold').fontSize(8).fillColor(colors.ink).text(signature.name || '-', x + 10, top + 94, { width: width - 20, align: 'center' });
+        document.font('Helvetica').fontSize(7).fillColor(colors.muted).text(signature.legalId ? `Identificación: ${signature.legalId}` : 'Identificación no registrada', x + 10, top + 108, { width: width - 20, align: 'center' });
+        if (signature.signedAt || signature.method) {
+          const method = signature.method === 'presencial' ? 'presencial' : signature.method === 'papel' ? 'papel' : 'portal';
+          document.text([signature.signedAt, signature.method ? `Método: ${method}` : null].filter(Boolean).join(' · '), x + 10, top + 122, { width: width - 20, align: 'center' });
+        }
+      });
+      document.y = top + 160;
+    }
   }, input.createdAt);
 }
 

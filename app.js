@@ -1,4 +1,4 @@
-const APP_VERSION = '305';
+const APP_VERSION = '306';
 const markPwaVersion = () => document.querySelectorAll('.topbar-actions').forEach(actions => {
   if (actions.querySelector('[data-pwa-version]')) return;
   const indicator = document.createElement('span');
@@ -1340,6 +1340,98 @@ async function loadAttendanceReport() {
 function renderAll() { renderDashboard(); renderClients(); renderGoogleCalendar(); renderCalendar(); renderRoutines(); renderBilling(); renderAttendanceReport(); if (document.getElementById('billing')?.classList.contains('active') && document.querySelector('#billing .subtab.active')?.dataset.subtab === 'facturas-nuevo') newBillingInvoices(); }
 const modal = document.getElementById('modal');
 function openModal(content, wide = false) { modal.classList.toggle('modal-wide', wide); document.getElementById('modal-content').replaceChildren(content); if (!modal.open) modal.showModal(); }
+
+function signatureCanvasPng(canvas) {
+  const source = canvas.getContext('2d'); const width = canvas.width; const height = canvas.height;
+  const pixels = source.getImageData(0, 0, width, height); let minX = width; let minY = height; let maxX = -1; let maxY = -1;
+  for (let y = 0; y < height; y += 1) for (let x = 0; x < width; x += 1) {
+    const alpha = pixels.data[(y * width + x) * 4 + 3];
+    if (alpha > 10) { minX = Math.min(minX, x); minY = Math.min(minY, y); maxX = Math.max(maxX, x); maxY = Math.max(maxY, y); }
+  }
+  if (maxX < 0) throw new Error('Dibuja la firma antes de continuar');
+  const pad = Math.max(10, Math.round(width * .025)); const sx = Math.max(0, minX - pad); const sy = Math.max(0, minY - pad);
+  const sw = Math.min(width - sx, maxX - minX + 1 + pad * 2); const sh = Math.min(height - sy, maxY - minY + 1 + pad * 2);
+  const output = document.createElement('canvas'); output.width = Math.min(1200, Math.max(160, sw)); output.height = Math.min(600, Math.max(80, sh));
+  output.getContext('2d').drawImage(canvas, sx, sy, sw, sh, 0, 0, output.width, output.height);
+  const imageData = output.toDataURL('image/png');
+  if (Math.ceil((imageData.length - imageData.indexOf(',') - 1) * .75) > 300 * 1024) throw new Error('La firma supera 300 KB; intenta de nuevo con un trazo más simple');
+  return imageData;
+}
+
+function openSignatureCapture({ title = 'Firma manuscrita', allowUpload = false, previewName = '', previewLegalId = '' } = {}) {
+  return new Promise(resolve => {
+    const host = document.createElement('dialog'); host.className = 'signature-dialog-host';
+    host.innerHTML = `<form method="dialog" class="signature-dialog"><p class="eyebrow">FIRMA MANUSCRITA</p><h2>${escapeHtml(title)}</h2>
+      <p class="section-note">Firma dentro del recuadro con Apple Pencil, dedo o ratón. La firma queda privada y solo se usa como evidencia del contrato.</p>
+      <div class="signature-pad"><canvas aria-label="Área para dibujar la firma"></canvas><span>Firma aquí</span></div>
+      <div class="signature-tools"><button type="button" class="secondary" data-signature-undo>Deshacer</button><button type="button" class="secondary" data-signature-clear>Limpiar</button>${allowUpload ? '<label class="secondary signature-upload">Subir imagen<input type="file" accept="image/png,image/jpeg,.png,.jpg,.jpeg,.heic,.heif" hidden /></label><button type="button" class="secondary" data-signature-retry>Volver a intentar</button>' : ''}</div>
+      ${allowUpload ? `<label class="signature-cleanup">Limpieza de fondo <input type="range" min="0" max="100" value="55" /></label><small class="signature-upload-note">PNG o JPG. Si la foto está en HEIC, guárdala como JPG o PNG antes de subirla.</small>
+      <section class="signature-contract-example"><b>EILEEN</b><div><img data-signature-preview-image alt="Vista previa de la firma" hidden /><span data-signature-preview-empty>La firma aparecerá aquí.</span></div><strong>${escapeHtml(previewName || 'Nombre legal de Eileen')}</strong><small>Cédula: ${escapeHtml(previewLegalId || 'pendiente')}</small></section>` : ''}
+      <div class="signature-actions"><button type="button" class="secondary" data-signature-cancel>Cancelar</button><button type="button" class="primary" data-signature-use>Usar esta firma</button></div><p class="contract-missing" data-signature-error hidden></p></form>`;
+    document.body.append(host); const canvas = host.querySelector('canvas'); const pad = host.querySelector('.signature-pad');
+    const context = canvas.getContext('2d'); const strokes = []; let active = null; let penActive = false; let uploaded = false; let uploadImage = null;
+    const errorBox = host.querySelector('[data-signature-error]');
+    const showError = message => { errorBox.textContent = message; errorBox.hidden = false; };
+    const syncPreview = () => {
+      const image = host.querySelector('[data-signature-preview-image]'); const empty = host.querySelector('[data-signature-preview-empty]'); if (!image) return;
+      try { image.src = signatureCanvasPng(canvas); image.hidden = false; empty.hidden = true; }
+      catch { image.removeAttribute('src'); image.hidden = true; empty.hidden = false; }
+    };
+    const resize = () => {
+      const rect = pad.getBoundingClientRect(); const ratio = Math.max(1, window.devicePixelRatio || 1); const old = strokes.map(stroke => stroke.slice());
+      canvas.width = Math.max(320, Math.round((rect.width || 520) * ratio)); canvas.height = Math.max(150, Math.round(190 * ratio)); canvas.style.width = '100%'; canvas.style.height = '190px';
+      context.setTransform(1, 0, 0, 1, 0, 0); context.scale(ratio, ratio); context.lineCap = 'round'; context.lineJoin = 'round'; context.strokeStyle = '#493740';
+      if (uploaded && uploadImage) drawUploaded(); else { strokes.splice(0, strokes.length, ...old); redraw(); }
+    };
+    const point = event => { const rect = canvas.getBoundingClientRect(); return { x: Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width)), y: Math.max(0, Math.min(1, (event.clientY - rect.top) / rect.height)), time: Date.now(), pressure: Number.isFinite(event.pressure) && event.pressure > 0 ? event.pressure : .5 }; };
+    const line = (a, b) => { const rect = canvas.getBoundingClientRect(); context.lineWidth = 1.6 + b.pressure * 3.4; context.beginPath(); context.moveTo(a.x * rect.width, a.y * rect.height); context.lineTo(b.x * rect.width, b.y * rect.height); context.stroke(); };
+    const redraw = () => { const rect = canvas.getBoundingClientRect(); context.clearRect(0, 0, rect.width, rect.height); for (const stroke of strokes) for (let i = 1; i < stroke.length; i += 1) line(stroke[i - 1], stroke[i]); };
+    const drawUploaded = () => {
+      const rect = canvas.getBoundingClientRect(); context.clearRect(0, 0, rect.width, rect.height); if (!uploadImage) return;
+      const scale = Math.min(rect.width / uploadImage.width, rect.height / uploadImage.height); const width = uploadImage.width * scale; const height = uploadImage.height * scale;
+      context.drawImage(uploadImage, (rect.width - width) / 2, (rect.height - height) / 2, width, height);
+      const image = context.getImageData(0, 0, canvas.width, canvas.height); const cleanup = Number(host.querySelector('.signature-cleanup input')?.value || 55); const threshold = 248 - cleanup * .7;
+      for (let i = 0; i < image.data.length; i += 4) { const light = (image.data[i] + image.data[i + 1] + image.data[i + 2]) / 3; const alpha = image.data[i + 3]; if (alpha < 10 || light >= threshold) image.data[i + 3] = 0; else { image.data[i] = 55; image.data[i + 1] = 38; image.data[i + 2] = 47; image.data[i + 3] = Math.max(90, Math.min(255, (threshold - light) * 5)); } }
+      context.putImageData(image, 0, 0);
+      syncPreview();
+    };
+    canvas.addEventListener('pointerdown', event => {
+      if (uploaded || (penActive && event.pointerType === 'touch')) return;
+      if (event.pointerType === 'pen') penActive = true;
+      event.preventDefault(); canvas.setPointerCapture?.(event.pointerId); active = [point(event)]; strokes.push(active);
+    });
+    canvas.addEventListener('pointermove', event => {
+      if (!active || uploaded || (penActive && event.pointerType === 'touch')) return;
+      event.preventDefault(); const coalesced = event.getCoalescedEvents?.(); const events = coalesced?.length ? coalesced : [event];
+      for (const sample of events) { const next = point(sample); line(active[active.length - 1], next); active.push(next); }
+    });
+    const finish = event => { if (!active) return; event.preventDefault(); active = null; if (event.pointerType === 'pen') penActive = false; syncPreview(); };
+    canvas.addEventListener('pointerup', finish); canvas.addEventListener('pointercancel', finish);
+    host.querySelector('[data-signature-undo]').onclick = () => { uploaded = false; uploadImage = null; strokes.pop(); redraw(); syncPreview(); };
+    const clearSignature = () => { uploaded = false; uploadImage = null; strokes.length = 0; redraw(); syncPreview(); errorBox.hidden = true; };
+    host.querySelector('[data-signature-clear]').onclick = clearSignature;
+    host.querySelector('[data-signature-retry]')?.addEventListener('click', clearSignature);
+    const fileInput = host.querySelector('input[type="file"]');
+    if (fileInput) fileInput.onchange = () => {
+      const file = fileInput.files[0]; if (!file) return; const extension = file.name.split('.').pop().toLowerCase();
+      if (['heic', 'heif'].includes(extension) || /hei[cf]/i.test(file.type)) { showError('HEIC no es compatible aquí. Guárdala como JPG o PNG y vuelve a intentarlo.'); return; }
+      if (!['image/png', 'image/jpeg'].includes(file.type) || file.size > 6 * 1024 * 1024) { showError('Usa una imagen PNG o JPG de hasta 6 MB.'); return; }
+      const reader = new FileReader(); reader.onload = () => { const image = new Image(); image.onload = () => { uploadImage = image; uploaded = true; strokes.length = 0; drawUploaded(); errorBox.hidden = true; }; image.onerror = () => showError('No fue posible leer esa imagen.'); image.src = reader.result; }; reader.readAsDataURL(file);
+    };
+    host.querySelector('.signature-cleanup input')?.addEventListener('input', drawUploaded);
+    let settled = false; const close = value => { if (settled) return; settled = true; resolve(value); host.close(); host.remove(); };
+    host.querySelector('[data-signature-cancel]').onclick = () => close(null);
+    host.querySelector('[data-signature-use]').onclick = () => {
+      try {
+        if (!uploaded) { const points = strokes.reduce((sum, stroke) => sum + stroke.length, 0); let length = 0; for (const stroke of strokes) for (let i = 1; i < stroke.length; i += 1) length += Math.hypot(stroke[i].x - stroke[i - 1].x, stroke[i].y - stroke[i - 1].y); if (points < 5 || length < .08) throw new Error('La firma está vacía o es solo un punto'); }
+        close({ imageData: signatureCanvasPng(canvas), strokes: uploaded ? [] : strokes, source: uploaded ? 'upload' : 'draw' });
+      } catch (error) { showError(error.message); }
+    };
+    host.addEventListener('cancel', event => { event.preventDefault(); close(null); }); host.addEventListener('close', () => close(null));
+    host.showModal(); requestAnimationFrame(resize);
+  });
+}
+window.openSignatureCapture = openSignatureCapture;
 function formFromTemplate(id) { return document.getElementById(id).content.cloneNode(true); }
 async function protectedBlob(path) {
   const response = await fetch(`${API_BASE}${path}`, { headers: authToken ? { Authorization: `Bearer ${authToken}` } : {} });
@@ -5052,17 +5144,34 @@ async function clientContractsSection(target, client) {
     const contracts = await api(`/api/clients/${client.id}/contracts`);
     if (!target.isConnected) return;
     const label = value => ({ borrador: 'Borrador', enviado: 'Pendiente de firma', firmado: 'Firmado', reemplazado: 'Reemplazado', anulado: 'Anulado' }[value] || value);
-    target.innerHTML = `${contracts.length ? contracts.map(contract => `<div class="viaje-fila"><div><b>${label(contract.status)} · ${contract.template_key}</b><small>${contract.signed_at ? `Firmado ${fechaCorta(contract.signed_at)}` : contract.sent_at ? `Enviado ${fechaCorta(contract.sent_at)}` : 'Sin enviar'}${contract.signed_name ? ` · ${escapeHtml(contract.signed_name)}` : ''}</small></div><div class="viaje-acciones"><button type="button" class="secondary" data-contract-download="${contract.id}">Descargar PDF</button>${contract.status === 'borrador' ? `<button type="button" class="primary" data-contract-send="${contract.id}">Enviar al portal</button>` : ''}${['borrador', 'enviado'].includes(contract.status) ? `<button type="button" class="secondary" data-contract-paper="${contract.id}">Firmado en papel</button>` : ''}</div></div>`).join('') : '<p class="empty">Sin contrato.</p>'}<button type="button" class="primary wide-button" id="generate-client-contract">Generar contrato</button><button type="button" class="secondary wide-button" id="contract-whatsapp">Enviar por WhatsApp</button>`;
+    target.innerHTML = `${contracts.length ? contracts.map(contract => `<div class="viaje-fila"><div><b>${label(contract.status)} · ${contract.template_key}</b><small>${contract.signed_at ? `Firmado ${fechaCorta(contract.signed_at)}${contract.signature_method ? ` · ${contract.signature_method === 'presencial' ? 'presencial' : contract.signature_method}` : ''}` : contract.sent_at ? `Enviado ${fechaCorta(contract.sent_at)}` : 'Sin enviar'}${contract.signed_name ? ` · ${escapeHtml(contract.signed_name)}` : ''}</small></div><div class="viaje-acciones"><button type="button" class="secondary" data-contract-download="${contract.id}">Descargar PDF</button>${contract.status === 'borrador' ? `<button type="button" class="primary" data-contract-send="${contract.id}">Enviar al portal</button>` : ''}${contract.status === 'enviado' ? `<button type="button" class="primary contract-in-person" data-contract-in-person="${contract.id}">Firmar en este dispositivo</button>` : ''}${['borrador', 'enviado'].includes(contract.status) ? `<button type="button" class="secondary" data-contract-paper="${contract.id}">Firmado en papel</button>` : ''}</div></div>`).join('') : '<p class="empty">Sin contrato.</p>'}<button type="button" class="primary wide-button" id="generate-client-contract">Generar contrato</button><button type="button" class="secondary wide-button" id="contract-whatsapp">Enviar por WhatsApp</button>`;
     target.querySelector('#generate-client-contract').onclick = () => contractEditor(client);
     target.querySelectorAll('[data-contract-download]').forEach(button => { button.onclick = () => downloadContract(button.dataset.contractDownload).catch(error => toast(error.message, true)); });
     target.querySelectorAll('[data-contract-send]').forEach(button => { button.onclick = async () => { try { await api(`/api/contracts/${button.dataset.contractSend}/send`, { method: 'POST', body: {} }); await loadData(); renderAll(); await clientContractsSection(target, client); toast('Contrato enviado al portal'); } catch (error) { toast(error.message, true); } }; });
     target.querySelectorAll('[data-contract-paper]').forEach(button => { button.onclick = () => paperContractDialog(client, button.dataset.contractPaper); });
+    target.querySelectorAll('[data-contract-in-person]').forEach(button => { button.onclick = () => inPersonContractDialog(client, button.dataset.contractInPerson); });
     target.querySelector('#contract-whatsapp').onclick = () => {
       // Solo el enlace genérico al portal: sin nombre, cédula ni token en la URL.
       const portalUrl = new URL('./', window.location.href); portalUrl.hash = 'portal-routines'; portalUrl.search = '';
       window.open(`https://wa.me/?text=${encodeURIComponent(portalUrl.toString())}`, '_blank', 'noopener');
     };
   } catch (error) { if (target.isConnected) target.innerHTML = `<p class="empty">${escapeHtml(error.message)}</p>`; }
+}
+async function inPersonContractDialog(client, contractId) {
+  const box = document.createElement('div'); box.innerHTML = `<form id="in-person-contract"><p class="eyebrow">FIRMA PRESENCIAL</p><h2>Firmar en este dispositivo</h2><p class="section-note">Entrega el iPad a ${escapeHtml(client.name)}. Debe leer hasta el final, confirmar su nombre y dibujar su firma.</p><pre class="contract-text" tabindex="0">Cargando contrato…</pre><label class="checkbox-line"><input name="accept" type="checkbox" required disabled /> He leído y acepto este contrato</label><label>Nombre completo como aparece en el contrato<input name="signedName" required value="${escapeHtml(client.name)}" /></label><div id="in-person-guardian" hidden><label>Nombre del representante legal<input name="guardianName" /></label><label>Identificación del representante<input name="guardianId" /></label></div><button class="primary wide-button" disabled>Continuar a firmar</button></form>`; openModal(box, true);
+  const form = box.querySelector('form'); const text = box.querySelector('.contract-text'); const submit = form.querySelector('button'); let loaded = false; let read = false;
+  const update = () => { if (loaded && text.scrollTop + text.clientHeight >= text.scrollHeight - 2) read = true; form.elements.accept.disabled = !read; submit.disabled = !read || !form.elements.accept.checked; };
+  text.addEventListener('scroll', update); form.elements.accept.addEventListener('change', update);
+  try { const result = await api(`/api/contracts/${contractId}/download`); text.textContent = result.bodyText; loaded = true; box.querySelector('#in-person-guardian').hidden = !result.requiresGuardian; form.elements.guardianName.required = result.requiresGuardian; form.elements.guardianId.required = result.requiresGuardian; requestAnimationFrame(update); }
+  catch (error) { text.textContent = error.message; return; }
+  form.onsubmit = async event => {
+    event.preventDefault(); if (!read || !form.elements.accept.checked) return;
+    const signature = await openSignatureCapture({ title: form.elements.guardianName.required ? 'Firma del representante legal' : `Firma de ${client.name}` }); if (!signature) return;
+    const values = new FormData(form);
+    try { form.classList.add('loading-state'); await api(`/api/contracts/${contractId}/sign-in-person`, { method: 'POST', body: { accepted: true, signedName: values.get('signedName'), signaturePng: signature.imageData, signatureStrokes: signature.strokes,
+      ...(form.elements.guardianName.required ? { guardianName: values.get('guardianName'), guardianId: values.get('guardianId') } : {}) } }); await loadData(); renderAll(); clientDetail(client.id); toast('Contrato firmado presencialmente'); }
+    catch (error) { toast(error.message, true); } finally { form.classList.remove('loading-state'); }
+  };
 }
 function paperContractDialog(client, contractId) {
   const box = document.createElement('div');
@@ -6817,7 +6926,7 @@ function renderPortalContracts() {
   target.querySelectorAll('[data-portal-download-contract]').forEach(button => { button.onclick = () => downloadContract(button.dataset.portalDownloadContract).catch(error => toast(error.message, true)); });
 }
 function portalSignContract(contractId) {
-  const box = document.createElement('div'); box.innerHTML = '<form id="portal-sign-contract"><p class="eyebrow">CONTRATO</p><h2>Tienes un contrato por aceptar</h2><p class="section-note">Lee hasta el final para habilitar la aceptación.</p><pre class="contract-text" tabindex="0">Cargando contrato…</pre><label class="checkbox-line"><input name="accept" type="checkbox" required disabled /> He leído y acepto este contrato</label><label>Escribe tu nombre completo<input name="signedName" required /></label><div id="contract-guardian" hidden><label>Nombre del representante legal<input name="guardianName" /></label><label>Identificación del representante<input name="guardianId" /></label></div><button class="primary wide-button" disabled>Firmar contrato</button></form>'; openModal(box);
+  const box = document.createElement('div'); box.innerHTML = '<form id="portal-sign-contract"><p class="eyebrow">CONTRATO</p><h2>Tienes un contrato por aceptar</h2><p class="section-note">Lee hasta el final para habilitar la aceptación. Después dibujarás tu firma con el dedo, Apple Pencil o ratón.</p><pre class="contract-text" tabindex="0">Cargando contrato…</pre><label class="checkbox-line"><input name="accept" type="checkbox" required disabled /> He leído y acepto este contrato</label><label>Escribe tu nombre completo<input name="signedName" required /></label><div id="contract-guardian" hidden><label>Nombre del representante legal<input name="guardianName" /></label><label>Identificación del representante<input name="guardianId" /></label><small>La firma manuscrita debe ser la del representante legal.</small></div><span class="contract-sign-state">La firma todavía no se ha capturado.</span><button class="primary wide-button" disabled>Continuar a firmar</button></form>'; openModal(box);
   const form = box.querySelector('form'); const text = box.querySelector('pre'); const submit = form.querySelector('button');
   let loaded = false; let read = false;
   const update = () => { if (loaded && text.scrollTop + text.clientHeight >= text.scrollHeight - 2) read = true; form.elements.accept.disabled = !read; submit.disabled = !read || !form.elements.accept.checked; };
@@ -6830,9 +6939,12 @@ function portalSignContract(contractId) {
   }).catch(error => { text.textContent = error.message; });
   form.onsubmit = async event => {
     event.preventDefault(); if (!read || !form.elements.accept.checked) return;
+    const signature = await openSignatureCapture({ title: form.elements.guardianName.required ? 'Firma del representante legal' : 'Firma del cliente' });
+    if (!signature) return;
     try {
       form.classList.add('loading-state'); const values = new FormData(form);
-      await api(`/api/contracts/${contractId}/sign`, { method: 'POST', body: { accepted: true, signedName: values.get('signedName'), ...(form.elements.guardianName.required ? { guardianName: values.get('guardianName'), guardianId: values.get('guardianId') } : {}) } });
+      await api(`/api/contracts/${contractId}/sign`, { method: 'POST', body: { accepted: true, signedName: values.get('signedName'), signaturePng: signature.imageData, signatureStrokes: signature.strokes,
+        ...(form.elements.guardianName.required ? { guardianName: values.get('guardianName'), guardianId: values.get('guardianId') } : {}) } });
       modal.close(); await loadPortalData(); toast('Contrato firmado');
     } catch (error) { toast(error.message, true); } finally { form.classList.remove('loading-state'); }
   };
@@ -7192,9 +7304,17 @@ function accountMenu() {
   document.getElementById('account-logout').onclick = () => { modal.close(); logout(); };
 }
 async function accountDemoSettings() {
-  const box = document.createElement('div'); box.innerHTML = '<p class="eyebrow">AJUSTES DE LA CUENTA</p><h2>Ajustes de la cuenta</h2><form id="demo-settings-form"><label>WhatsApp de Eileen<input name="contactWhatsapp" inputmode="numeric" placeholder="Código de país + número" /></label><small>Solo dígitos con código de país. Déjalo vacío para ocultar “Hablar con Eileen”.</small><p class="eyebrow" style="margin-top:20px">DATOS PARA CONTRATOS</p><label>Nombre legal<input name="legalName" /></label><label>Identificación legal<input name="legalId" /></label><label>Domicilio legal<textarea name="legalAddress" rows="2"></textarea></label><label>Ciudad del contrato<input name="contractCity" /></label><small>Estos datos se guardan en Ajustes de la cuenta y no se incluyen en el código de la aplicación.</small><button class="primary wide-button">Guardar ajustes</button></form>';
+  const box = document.createElement('div'); box.innerHTML = '<p class="eyebrow">AJUSTES DE LA CUENTA</p><h2>Ajustes de la cuenta</h2><form id="demo-settings-form"><label>WhatsApp de Eileen<input name="contactWhatsapp" inputmode="numeric" placeholder="Código de país + número" /></label><small>Solo dígitos con código de país. Déjalo vacío para ocultar “Hablar con Eileen”.</small><p class="eyebrow" style="margin-top:20px">DATOS PARA CONTRATOS</p><label>Nombre legal<input name="legalName" /></label><label>Identificación legal<input name="legalId" /></label><label>Domicilio legal<textarea name="legalAddress" rows="2"></textarea></label><label>Ciudad del contrato<input name="contractCity" /></label><small>Estos datos se guardan en Ajustes de la cuenta y no se incluyen en el código de la aplicación.</small><section class="signature-preview"><b>Firma de Eileen para contratos</b><div id="owner-signature-preview"><span class="signature-status">Sin firma guardada. Los contratos se pueden enviar y mostrarán el espacio pendiente.</span></div><button type="button" class="secondary wide-button" id="owner-signature-edit">Dibujar o subir firma</button></section><button class="primary wide-button">Guardar ajustes</button></form>';
   openModal(box);
-  try { const settings = await api('/api/account-settings'); for (const [name, key] of [['contactWhatsapp', 'contact_whatsapp'], ['legalName', 'legal_name'], ['legalId', 'legal_id'], ['legalAddress', 'legal_address'], ['contractCity', 'contract_city']]) box.querySelector(`[name="${name}"]`).value = settings[key] || ''; } catch (error) { toast(error.message, true); }
+  try {
+    const settings = await api('/api/account-settings'); for (const [name, key] of [['contactWhatsapp', 'contact_whatsapp'], ['legalName', 'legal_name'], ['legalId', 'legal_id'], ['legalAddress', 'legal_address'], ['contractCity', 'contract_city']]) box.querySelector(`[name="${name}"]`).value = settings[key] || '';
+    if (settings.has_owner_signature) { const signature = await api('/api/account-settings/signature'); box.querySelector('#owner-signature-preview').innerHTML = `<img alt="Firma guardada de Eileen" src="${signature.imageData}" /><span class="signature-status">Firma privada guardada${settings.owner_signature_updated_at ? ` · ${fechaHoraPanama(settings.owner_signature_updated_at)}` : ''}</span>`; }
+  } catch (error) { if (error.status !== 404) toast(error.message, true); }
+  box.querySelector('#owner-signature-edit').onclick = async () => {
+    const signature = await openSignatureCapture({ title: 'Firma de Eileen', allowUpload: true, previewName: box.querySelector('[name="legalName"]').value, previewLegalId: box.querySelector('[name="legalId"]').value }); if (!signature) return;
+    try { await api('/api/account-settings/signature', { method: 'POST', body: signature }); box.querySelector('#owner-signature-preview').innerHTML = `<img alt="Firma guardada de Eileen" src="${signature.imageData}" /><span class="signature-status">Firma privada guardada ahora</span>`; toast('Firma de Eileen guardada'); }
+    catch (error) { toast(error.message, true); }
+  };
   box.querySelector('form').addEventListener('submit', async event => { event.preventDefault(); const values = new FormData(event.currentTarget); try { await api('/api/account-settings', { method: 'PATCH', body: { contactWhatsapp: values.get('contactWhatsapp'), legalName: values.get('legalName'), legalId: values.get('legalId'), legalAddress: values.get('legalAddress'), contractCity: values.get('contractCity') } }); modal.close(); toast('Ajustes de la cuenta guardados'); } catch (error) { toast(error.message, true); } });
 }
 document.getElementById('account-button').addEventListener('click', accountMenu);

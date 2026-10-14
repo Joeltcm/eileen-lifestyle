@@ -8,6 +8,7 @@ import { readFile } from 'node:fs/promises';
 import { CREDENCIALES, SETUP_TOKEN, cliente, levantar } from './harness.mjs';
 import { abrirPantalla, esperar } from './ui-harness.mjs';
 import { renderContractTemplate, contractTimestamp } from '../dist/contracts.js';
+import { signaturePayload } from './signature-fixture.mjs';
 
 let server, api, db, token, scenarioNumber = 0;
 const today = () => new Date(Date.now() - 5 * 3600000).toISOString().slice(0, 10);
@@ -35,6 +36,7 @@ async function scenario(model = 'mensualidad', extra = {}) {
   return { plan, client, portal, portalToken: access.token };
 }
 const generate = async (s, extra = {}) => ok(await api.post('/api/clients/' + s.client.id + '/contracts', { templateKey: s.plan.service_type === 'rutinas' ? 'rutinas' : s.plan.billing_model === 'package' ? 'paquete' : 'mensualidad', send: true, ...extra }));
+const signedBody = async (signedName, extra = {}) => ({ accepted: true, signedName, ...await signaturePayload(), ...extra });
 async function commercialSnapshot(clientId) {
   const [client] = await db`SELECT * FROM clients WHERE id = ${clientId}`;
   const subscriptions = await db`SELECT * FROM billing_subscriptions WHERE beneficiary_client_id = ${clientId} OR payer_client_id = ${clientId} ORDER BY id`;
@@ -99,24 +101,24 @@ test('guardar otra parte del expediente no borra los nuevos campos; un borrador 
 });
 test('aceptación correcta: PDF firmado, SHA exacto, evidencia, aviso único; otro cliente recibe 404', async () => {
   const s = await scenario(); const contract = await generate(s);
-  assert.equal((await s.portal.post('/api/contracts/' + contract.id + '/sign', { accepted: true, signedName: 'Nombre diferente' })).estado, 400);
+  assert.equal((await s.portal.post('/api/contracts/' + contract.id + '/sign', await signedBody('Nombre diferente'))).estado, 400);
   assert.equal((await s.portal.post('/api/contracts/' + contract.id + '/sign', { signedName: s.client.full_name })).estado, 400);
   const other = await scenario(); assert.equal((await other.portal.get('/api/contracts/' + contract.id + '/download')).estado, 404);
-  assert.equal((await other.portal.post('/api/contracts/' + contract.id + '/sign', { accepted: true, signedName: s.client.full_name })).estado, 404);
-  const signed = ok(await s.portal.post('/api/contracts/' + contract.id + '/sign', { accepted: true, signedName: 'MARIA CONTRATO MENSUALIDAD' }), 200);
-  assert.equal(signed.status, 'firmado'); assert.match(signed.body_text, /Aceptado electrónicamente/); assert.ok(signed.signed_ip && signed.signed_user_agent);
+  assert.equal((await other.portal.post('/api/contracts/' + contract.id + '/sign', await signedBody(s.client.full_name))).estado, 404);
+  const signed = ok(await s.portal.post('/api/contracts/' + contract.id + '/sign', await signedBody('MARIA CONTRATO MENSUALIDAD')), 200);
+  assert.equal(signed.status, 'firmado'); assert.match(signed.body_text, /ACEPTACIÓN CON FIRMA MANUSCRITA/); assert.ok(signed.signed_ip && signed.signed_user_agent);
   const download = await fetch(server.base + '/api/contracts/' + contract.id + '/pdf', { headers: { Authorization: 'Bearer ' + s.portalToken } });
   assert.equal(download.status, 200);
   const bytes = Buffer.from(await download.arrayBuffer()); assert.equal(createHash('sha256').update(bytes).digest('hex'), signed.pdf_sha256);
-  assert.match(pdfText(bytes), /Aceptado electr[oó]nicamente/);
+  assert.match(pdfText(bytes), /FIRMA MANUSCRITA/);
   assert.equal((await db`SELECT kind FROM documents WHERE id = ${signed.pdf_document_id}`)[0].kind, 'contract');
-  assert.equal((await s.portal.post('/api/contracts/' + contract.id + '/sign', { accepted: true, signedName: s.client.full_name })).estado, 409);
+  assert.equal((await s.portal.post('/api/contracts/' + contract.id + '/sign', await signedBody(s.client.full_name))).estado, 409);
   const notices = (await api.get('/api/notifications')).datos.filter(x => x.title.includes('Contrato firmado'));
   assert.equal(notices.filter(x => x.body.includes('firmó')).length, 1);
 });
 test('firma congelada en SQL: ni texto ni PDF ni borrado; nuevo contrato reemplaza sin duplicar vigentes', async () => {
   const s = await scenario(); const c1 = await generate(s);
-  const first = ok(await s.portal.post('/api/contracts/' + c1.id + '/sign', { accepted: true, signedName: s.client.full_name }), 200);
+  const first = ok(await s.portal.post('/api/contracts/' + c1.id + '/sign', await signedBody(s.client.full_name)), 200);
   await assert.rejects(db`UPDATE client_contracts SET body_text = 'Cambio' WHERE id = ${c1.id}`, /inmutable/);
   await assert.rejects(db`UPDATE client_contracts SET values = '{}'::jsonb WHERE id = ${c1.id}`, /inmutable/);
   await assert.rejects(db`DELETE FROM documents WHERE id = ${first.pdf_document_id}`, /inmutable/);
@@ -124,7 +126,7 @@ test('firma congelada en SQL: ni texto ni PDF ni borrado; nuevo contrato reempla
   ok(await api.patch('/api/plans/' + s.plan.id, { name: s.plan.name, billingModel: 'monthly', price: 330, sessionsIncluded: 12 }), 200);
   ok(await api.patch('/api/clients/' + s.client.id + '/plan', { planId: s.plan.id, cutoffDay: 15 }), 200);
   const c2 = await generate(s);
-  const results = await Promise.all([1, 2].map(() => s.portal.post('/api/contracts/' + c2.id + '/sign', { accepted: true, signedName: s.client.full_name })));
+  const results = await Promise.all([1, 2].map(async () => s.portal.post('/api/contracts/' + c2.id + '/sign', await signedBody(s.client.full_name))));
   assert.deepEqual(results.map(x => x.estado).sort(), [200, 409]);
   const rows = (await api.get('/api/clients/' + s.client.id + '/contracts')).datos;
   assert.equal(rows.filter(x => x.status === 'firmado').length, 1);
@@ -137,8 +139,8 @@ test('menor: nombre e identificación de representante obligatorios; quedan en e
   const year = Number(today().slice(0, 4)) - 16; const s = await scenario('mensualidad', { client: { birthDate: year + '-01-01' } });
   const contract = await generate(s);
   assert.equal((await s.portal.get('/api/contracts/' + contract.id + '/download')).datos.requiresGuardian, true);
-  assert.equal((await s.portal.post('/api/contracts/' + contract.id + '/sign', { accepted: true, signedName: s.client.full_name })).estado, 400);
-  const signed = ok(await s.portal.post('/api/contracts/' + contract.id + '/sign', { accepted: true, signedName: s.client.full_name, guardianName: 'Tutor Ficticio', guardianId: 'TUTOR-TEST' }), 200);
+  assert.equal((await s.portal.post('/api/contracts/' + contract.id + '/sign', await signedBody(s.client.full_name))).estado, 400);
+  const signed = ok(await s.portal.post('/api/contracts/' + contract.id + '/sign', await signedBody(s.client.full_name, { guardianName: 'Tutor Ficticio', guardianId: 'TUTOR-TEST' })), 200);
   assert.equal(signed.guardian_name, 'Tutor Ficticio'); assert.match(signed.body_text, /TUTOR-TEST/);
 });
 test('papel: exige escaneo listo del mismo expediente; no vale el PDF sin firmar generado', async () => {
@@ -174,8 +176,8 @@ test('contrato informativo distinto del cobro no modifica expediente, conceptos,
   const preview = ok(await api.post('/api/clients/' + s.client.id + '/contracts/preview', terms), 200);
   assert.equal(preview.canSend, true); assert.match(preview.warnings.join(' '), /contrato dice \$333\.00.*cobra \$280\.00/i);
   const contract = ok(await api.post('/api/clients/' + s.client.id + '/contracts', { ...terms, send: true }));
-  const signed = ok(await s.portal.post('/api/contracts/' + contract.id + '/sign', { accepted: true, signedName: s.client.full_name }), 200);
-  assert.equal(signed.template_version, 2);
+  const signed = ok(await s.portal.post('/api/contracts/' + contract.id + '/sign', await signedBody(s.client.full_name)), 200);
+  assert.equal(signed.template_version, 3);
   assert.deepEqual(await commercialSnapshot(s.client.id), before);
   const pdf = await fetch(server.base + '/api/contracts/' + contract.id + '/pdf', { headers: { Authorization: 'Bearer ' + s.portalToken } });
   const text = pdfText(Buffer.from(await pdf.arrayBuffer()));
@@ -318,6 +320,8 @@ test('pantalla a 375 px: expediente, mensualidad sugerida, PDF, aceptación con 
     assert.equal(p.q('[name="accept"]').disabled, false);
     p.q('[name="accept"]').checked = true; p.q('[name="accept"]').dispatchEvent(new p.window.Event('change'));
     p.cambiar(p.q('[name="signedName"]'), s.client.full_name);
+    const captured = await signaturePayload();
+    p.evaluar(`openSignatureCapture = async () => (${JSON.stringify({ imageData: captured.signaturePng, strokes: captured.signatureStrokes, source: 'draw' })})`);
     p.q('#portal-sign-contract').dispatchEvent(new p.window.Event('submit', { bubbles: true, cancelable: true }));
     await esperar(() => p.q('#portal-contracts')?.textContent.includes('Contrato firmado'));
     assert.deepEqual(p.errores, []);

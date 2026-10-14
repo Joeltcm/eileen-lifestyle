@@ -3,6 +3,7 @@ import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import postgres from 'postgres';
 import { CREDENCIALES, SETUP_TOKEN, cliente, levantar } from './harness.mjs';
+import { signaturePayload } from './signature-fixture.mjs';
 
 let server, api, db, n = 0;
 const today = () => new Date(Date.now() - 5 * 3600000).toISOString().slice(0, 10);
@@ -27,7 +28,7 @@ test('los PDF de borrador y de envío no se apilan como "Contrato" en los docume
   const s = await escenario();
   const borrador = ok(await api.post(`/api/clients/${s.client.id}/contracts`, { templateKey: 'mensualidad', send: false }));
   ok(await api.post(`/api/contracts/${borrador.id}/send`, {}), 200);
-  ok(await s.portal.post(`/api/contracts/${borrador.id}/sign`, { accepted: true, signedName: s.client.full_name }), 200);
+  ok(await s.portal.post(`/api/contracts/${borrador.id}/sign`, { accepted: true, signedName: s.client.full_name, ...await signaturePayload() }), 200);
   const docs = ok(await api.get(`/api/documents?clientId=${s.client.id}`), 200).filter(d => d.kind === 'contract');
   assert.equal(docs.length, 1, `un solo documento Contrato (el firmado); hay ${docs.length}: ${docs.map(d => d.original_name).join(', ')}`);
   const [firmado] = await db`SELECT pdf_document_id FROM client_contracts WHERE id = ${borrador.id}`;

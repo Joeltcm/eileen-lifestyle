@@ -23,12 +23,29 @@ import { planBillingGeneration, runBillingGeneration, shiftCutAfterPause } from 
 import { DEFAULT_IMPORT_MANIFEST, applyBatch, approveBatch, createPreviewBatch, getBatch, listBatches, reverseBatch, type ImportManifest } from './billing-import.js';
 import { exercisesHash, sameExerciseSet, routineSummaryText, type RoutineExerciseForSummary } from './routine-utils.js';
 import { HOLIDAY_CLASS_RULE, CANCELLATION_NOTICE_HOURS, CONTRACT_TERMINATION_NOTICE_DAYS, RESCHEDULE_CHANGE_NOTICE_HOURS, RESCHEDULE_LATEST_END, contractTimestamp, contractTemplateVersion, normalizeContractName, renderContractTemplate, type ContractTemplateKey } from './contracts.js';
+import { validateSignaturePng, type SignatureStroke } from './contract-signatures.js';
 
 type AuthUser = { sub: string; role: 'admin' | 'trainer' | 'client'; email: string };
 const app = Fastify({ logger: true, trustProxy: true });
 const maxDocumentSize = 20 * 1024 * 1024;
 const documentContentTypes = ['application/pdf', 'image/jpeg', 'image/png', 'image/webp'] as const;
 const webPushReady = Boolean(config.VAPID_PUBLIC_KEY && config.VAPID_PRIVATE_KEY);
+// R2 no se configura en la suite. Este almacén efímero mantiene el mismo flujo
+// privado durante una prueba sin convertir la firma en una URL pública.
+const testSignatureObjects = new Map<string, Buffer>();
+
+async function storePrivateSignature(objectKey: string, contentType: string, body: Buffer) {
+  if (storageReady) await uploadObject(objectKey, contentType, body);
+  else if (config.NODE_ENV === 'test') testSignatureObjects.set(objectKey, Buffer.from(body));
+  else sessionStateConflict('Configura el almacenamiento privado antes de guardar firmas.');
+}
+
+async function privateSignatureBytes(objectKey?: string | null) {
+  if (!objectKey) return null;
+  if (storageReady) return (await downloadObject(objectKey)).body;
+  if (config.NODE_ENV === 'test') return testSignatureObjects.get(objectKey) || null;
+  return null;
+}
 
 if (webPushReady) {
   webpush.setVapidDetails(config.VAPID_SUBJECT, config.VAPID_PUBLIC_KEY!, config.VAPID_PRIVATE_KEY!);
@@ -2409,8 +2426,11 @@ app.get('/api/clients/:id/mode-events', { preHandler: requireStaff }, async (req
 
 app.get('/api/account-settings', { preHandler: requireStaff }, async request => {
   const auth = request.user as AuthUser;
-  const [settings] = await sql`SELECT owner_id, contact_whatsapp, legal_name, legal_id, legal_address, contract_city FROM account_settings WHERE owner_id = ${auth.sub}`;
-  return settings || { owner_id: auth.sub, contact_whatsapp: null, legal_name: null, legal_id: null, legal_address: null, contract_city: null };
+  const [settings] = await sql`SELECT owner_id, contact_whatsapp, legal_name, legal_id, legal_address, contract_city,
+    (owner_signature_key IS NOT NULL) AS has_owner_signature, owner_signature_updated_at
+    FROM account_settings WHERE owner_id = ${auth.sub}`;
+  return settings || { owner_id: auth.sub, contact_whatsapp: null, legal_name: null, legal_id: null, legal_address: null, contract_city: null,
+    has_owner_signature: false, owner_signature_updated_at: null };
 });
 
 app.patch('/api/account-settings', { preHandler: requireStaff }, async request => {
@@ -2426,9 +2446,35 @@ app.patch('/api/account-settings', { preHandler: requireStaff }, async request =
       legal_address = CASE WHEN ${input.legalAddress === undefined} THEN account_settings.legal_address ELSE ${input.legalAddress || null} END,
       contract_city = CASE WHEN ${input.contractCity === undefined} THEN account_settings.contract_city ELSE ${input.contractCity || null} END,
       updated_at = now()
-    RETURNING owner_id, contact_whatsapp, legal_name, legal_id, legal_address, contract_city
+    RETURNING owner_id, contact_whatsapp, legal_name, legal_id, legal_address, contract_city,
+      (owner_signature_key IS NOT NULL) AS has_owner_signature, owner_signature_updated_at
   `;
   return settings;
+});
+
+app.get('/api/account-settings/signature', { preHandler: requireStaff }, async (request, reply) => {
+  const auth = request.user as AuthUser;
+  const [settings] = await sql`SELECT owner_signature_key FROM account_settings WHERE owner_id = ${auth.sub}`;
+  const body = await privateSignatureBytes(settings?.owner_signature_key);
+  if (!body) return reply.code(404).send({ error: 'No hay una firma de Eileen guardada' });
+  return { imageData: `data:image/png;base64,${body.toString('base64')}` };
+});
+
+app.post('/api/account-settings/signature', { preHandler: requireStaff }, async request => {
+  const auth = request.user as AuthUser;
+  const input = z.object({ imageData: z.string().max(600000), strokes: z.unknown().optional(), source: z.enum(['draw', 'upload']).default('draw') }).parse(request.body);
+  let validated;
+  try { validated = await validateSignaturePng(input.imageData, input.source === 'draw' ? input.strokes : undefined, input.source === 'draw'); }
+  catch (cause) { const error = new Error((cause as Error).message) as Error & { statusCode: number }; error.statusCode = 400; throw error; }
+  const basename = randomUUID(); const objectKey = `signatures/owner/${auth.sub}/${basename}.png`;
+  const strokesKey = `signatures/owner/${auth.sub}/${basename}.strokes.json`;
+  await storePrivateSignature(objectKey, 'image/png', validated.body);
+  await storePrivateSignature(strokesKey, 'application/json', Buffer.from(JSON.stringify({ source: input.source, strokes: validated.strokes || [] })));
+  const [settings] = await sql`INSERT INTO account_settings (owner_id, owner_signature_key, owner_signature_updated_at)
+    VALUES (${auth.sub}, ${objectKey}, now()) ON CONFLICT (owner_id) DO UPDATE SET owner_signature_key = EXCLUDED.owner_signature_key,
+    owner_signature_updated_at = EXCLUDED.owner_signature_updated_at, updated_at = now()
+    RETURNING owner_id, owner_signature_updated_at`;
+  return { saved: true, owner_signature_updated_at: settings.owner_signature_updated_at };
 });
 
 // ── Contratos internos generados desde el expediente ─────────────────────
@@ -2579,7 +2625,8 @@ async function materialContrato(db: any, ownerId: string, clientId: string, inpu
     // Sin decisión de Eileen la cláusula de feriados NO menciona descuento (nunca un texto "[pendiente…]" dentro de un contrato que se firma).
     HOLIDAY_RULE: HOLIDAY_CLASS_RULE ?? '',
     PACKAGE_VALIDITY_DAYS: DIAS_USO_PAQUETE,
-    PACKAGE_RENEWAL_DAYS: DIAS_RENOVACION_PAQUETE, TERMINATION_NOTICE_DAYS: CONTRACT_TERMINATION_NOTICE_DAYS, ACCEPTANCE_BLOCK: ''
+    PACKAGE_RENEWAL_DAYS: DIAS_RENOVACION_PAQUETE, TERMINATION_NOTICE_DAYS: CONTRACT_TERMINATION_NOTICE_DAYS,
+    ACCEPTANCE_BLOCK: 'La firma manuscrita digital se conserva de forma privada junto con fecha, hora, método, dirección IP, agente del dispositivo y huella SHA-256 del PDF final como evidencia de aceptación.'
   };
   // Va al final: los avisos del cobro (precio, modalidad, pagador) son los que Eileen debe ver primero.
   if (key !== 'rutinas' && !HOLIDAY_CLASS_RULE) warnings.push('Falta que Eileen decida si la clase de un feriado se descuenta del plan; mientras tanto el contrato no lo menciona.');
@@ -2608,24 +2655,58 @@ function contractInputFromSnapshot(values: Record<string, any>) {
 async function guardarPdfContrato(db: any, contractId: string, ownerId: string, clientId: string, pdf: Buffer, nombre = 'contrato-' + contractId + '.pdf') {
   const objectKey = `contracts/${ownerId}/${clientId}/${contractId}/${randomUUID()}.pdf`;
   if (storageReady) await uploadObject(objectKey, 'application/pdf', pdf);
-  else if (config.NODE_ENV !== 'test') sessionStateConflict('Configura el almacenamiento de documentos antes de guardar o firmar contratos.');
+  else if (config.NODE_ENV === 'test') testSignatureObjects.set(objectKey, Buffer.from(pdf));
+  else sessionStateConflict('Configura el almacenamiento de documentos antes de guardar o firmar contratos.');
   const [document] = await db`INSERT INTO documents (client_id, kind, object_key, original_name, content_type, size_bytes, upload_status)
     VALUES (${clientId}, 'contract', ${objectKey}, ${nombre}, 'application/pdf', ${pdf.byteLength}, 'ready') RETURNING id, object_key`;
   return document;
+}
+
+async function currentOwnerSignature(db: any, ownerId: string) {
+  const [settings] = await db`SELECT owner_signature_key FROM account_settings WHERE owner_id = ${ownerId}`;
+  return { key: settings?.owner_signature_key || null };
+}
+
+function contractResponse(contract: Record<string, any>) {
+  const { owner_signature_key: _ownerSignatureKey, client_signature_key: _clientSignatureKey,
+    client_signature_strokes_key: _clientSignatureStrokesKey, ...visible } = contract;
+  return visible;
+}
+
+async function contractPdfWithSignatures(input: {
+  title: string; subtitle: string; body: string; values: Record<string, any>; ownerSignatureKey?: string | null;
+  clientSignatureKey?: string | null; clientSignatureImage?: Buffer | null; signedAt?: Date | string | null;
+  signatureMethod?: 'portal' | 'presencial' | 'papel' | null; guardianName?: string | null; guardianId?: string | null;
+  createdAt?: Date | string;
+}) {
+  const ownerImage = await privateSignatureBytes(input.ownerSignatureKey);
+  const clientImage = input.clientSignatureImage || await privateSignatureBytes(input.clientSignatureKey);
+  const guardian = Boolean(input.guardianName);
+  return contractPdf({ title: input.title, subtitle: input.subtitle, body: input.body, createdAt: input.createdAt,
+    signatures: {
+      owner: { role: 'Eileen', name: input.values.OWNER_LEGAL_NAME || 'Eileen', legalId: input.values.OWNER_LEGAL_ID, image: ownerImage },
+      client: { role: guardian ? 'Representante legal' : 'Cliente', name: guardian ? input.guardianName! : input.values.CLIENT_NAME,
+        legalId: guardian ? input.guardianId : input.values.CLIENT_ID, image: clientImage,
+        signedAt: input.signedAt ? `${contractTimestamp(new Date(input.signedAt))} Panamá` : null, method: input.signatureMethod || null }
+    }
+  });
 }
 
 app.get('/api/clients/:id/contracts', { preHandler: requireStaff }, async (request, reply) => {
   const auth = request.user as AuthUser; const clientId = z.string().uuid().parse((request.params as { id: string }).id);
   const [client] = await sql`SELECT id FROM clients WHERE id = ${clientId} AND owner_id = ${auth.sub}`;
   if (!client) return reply.code(404).send({ error: 'Cliente no encontrado' });
-  return sql`SELECT id, template_key, template_version, status, values, sent_at, signed_at, signed_name, guardian_name, pdf_document_id, pdf_sha256, created_at
+  return sql`SELECT id, template_key, template_version, status, values, sent_at, signed_at, signed_name, guardian_name, pdf_document_id, pdf_sha256,
+    signature_method, signed_in_person_by, (client_signature_key IS NOT NULL) AS has_handwritten_signature, created_at
     FROM client_contracts WHERE client_id = ${clientId} AND owner_id = ${auth.sub} ORDER BY created_at DESC`;
 });
 app.post('/api/clients/:id/contracts/preview', { preHandler: requireStaff }, async (request, reply) => {
   const auth = request.user as AuthUser; const clientId = z.string().uuid().parse((request.params as { id: string }).id);
   const input = contractDraftSchema.parse(request.body || {}); const material = await materialContrato(sql, auth.sub, clientId, input);
   if (!material) return reply.code(404).send({ error: 'Cliente no encontrado' });
-  const pdf = await contractPdf({ title: 'Contrato de servicios', subtitle: material.row.full_name + ' · borrador', body: material.bodyText });
+  const owner = await currentOwnerSignature(sql, auth.sub);
+  const pdf = await contractPdfWithSignatures({ title: 'Contrato de servicios', subtitle: material.row.full_name + ' · borrador', body: material.bodyText,
+    values: material.values, ownerSignatureKey: owner.key });
   return { templateKey: material.key, templateVersion: material.version, values: material.values, terms: material.terms,
     defaults: material.defaults, options: material.options, warnings: material.warnings, bodyText: material.bodyText,
     missing: material.missing, canSend: !material.missing.length, pdfBase64: pdf.toString('base64') };
@@ -2639,16 +2720,18 @@ app.post('/api/clients/:id/contracts', { preHandler: requireStaff }, async (requ
     if (!material) return null;
     if (input.send && material.missing.length) return { missing: material.missing };
     const status = input.send ? 'enviado' : 'borrador';
-    const [contract] = await transaction`INSERT INTO client_contracts (owner_id, client_id, template_key, template_version, status, values, body_text, sent_at, created_by)
-      VALUES (${auth.sub}, ${clientId}, ${material.key}, ${material.version}, ${status}, ${transaction.json(material.values)}, ${material.bodyText}, ${input.send ? transaction`now()` : null}, ${auth.sub}) RETURNING *`;
-    const pdf = await contractPdf({ title: 'Contrato de servicios', subtitle: material.row.full_name + ' · ' + status, body: material.bodyText });
+    const owner = await currentOwnerSignature(transaction, auth.sub);
+    const [contract] = await transaction`INSERT INTO client_contracts (owner_id, client_id, template_key, template_version, status, values, body_text, sent_at, created_by, owner_signature_key)
+      VALUES (${auth.sub}, ${clientId}, ${material.key}, ${material.version}, ${status}, ${transaction.json(material.values)}, ${material.bodyText}, ${input.send ? transaction`now()` : null}, ${auth.sub}, ${owner.key}) RETURNING *`;
+    const pdf = await contractPdfWithSignatures({ title: 'Contrato de servicios', subtitle: material.row.full_name + ' · ' + status, body: material.bodyText,
+      values: material.values, ownerSignatureKey: owner.key });
     const document = await guardarPdfContrato(transaction, contract.id, auth.sub, clientId, pdf);
     const [updated] = await transaction`UPDATE client_contracts SET pdf_document_id = ${document.id} WHERE id = ${contract.id} RETURNING *`;
     return { contract: updated, missing: material.missing };
   });
   if (!result) return reply.code(404).send({ error: 'Cliente no encontrado' });
   if (!('contract' in result)) return reply.code(409).send({ code: 'contract_missing_data', error: 'Faltan datos: ' + result.missing.join(', '), missing: result.missing });
-  return reply.code(201).send({ ...result.contract, missing: result.missing });
+  return reply.code(201).send({ ...contractResponse(result.contract!), missing: result.missing });
 });
 app.post('/api/contracts/:id/send', { preHandler: requireStaff }, async (request, reply) => {
   const auth = request.user as AuthUser; const id = z.string().uuid().parse((request.params as { id: string }).id);
@@ -2658,15 +2741,18 @@ app.post('/api/contracts/:id/send', { preHandler: requireStaff }, async (request
     const material = await materialContrato(transaction, auth.sub, draft.client_id,
       contractDraftSchema.parse({ ...contractInputFromSnapshot(draft.values), templateKey: draft.template_key }));
     if (!material || material.missing.length) return { missing: material?.missing || ['expediente del cliente'] };
-    const pdf = await contractPdf({ title: 'Contrato de servicios', subtitle: material.row.full_name + ' · enviado', body: material.bodyText });
+    const owner = await currentOwnerSignature(transaction, auth.sub);
+    const pdf = await contractPdfWithSignatures({ title: 'Contrato de servicios', subtitle: material.row.full_name + ' · enviado', body: material.bodyText,
+      values: material.values, ownerSignatureKey: owner.key });
     const document = await guardarPdfContrato(transaction, draft.id, auth.sub, draft.client_id, pdf);
     const [contract] = await transaction`UPDATE client_contracts SET status = 'enviado', sent_at = now(), values = ${transaction.json(material.values)},
-      body_text = ${material.bodyText}, template_version = ${material.version}, pdf_document_id = ${document.id} WHERE id = ${id} RETURNING *`;
+      body_text = ${material.bodyText}, template_version = ${material.version}, pdf_document_id = ${document.id}, owner_signature_key = ${owner.key}
+      WHERE id = ${id} RETURNING *`;
     return { contract };
   });
   if (!result) return reply.code(404).send({ error: 'Borrador de contrato no encontrado' });
   if (!('contract' in result)) return reply.code(409).send({ code: 'contract_missing_data', error: 'Faltan datos: ' + result.missing.join(', '), missing: result.missing });
-  return result.contract;
+  return contractResponse(result.contract!);
 });
 app.get('/api/contracts/pending-summary', { preHandler: requireStaff }, async request => {
   const auth = request.user as AuthUser;
@@ -2691,16 +2777,62 @@ app.get('/api/contracts/:id/download', { preHandler: requireAuth }, async (reque
 app.get('/api/contracts/:id/pdf', { preHandler: requireAuth }, async (request, reply) => {
   const contract = await contratoVisible(request.user as AuthUser, z.string().uuid().parse((request.params as { id: string }).id));
   if (!contract) return reply.code(404).send({ error: 'Contrato no encontrado' });
-  const pdf = storageReady && contract.object_key ? (await downloadObject(contract.object_key)).body
-    : await contractPdf({ title: 'Contrato de servicios', subtitle: contract.values.CLIENT_NAME + ' · ' + (contract.signed_at ? 'firmado' : contract.status),
-        body: contract.body_text, createdAt: contract.signed_at || contract.created_at });
+  const storedPdf = contract.object_key ? await privateSignatureBytes(contract.object_key) : null;
+  const pdf = storedPdf || await contractPdfWithSignatures({ title: 'Contrato de servicios', subtitle: contract.values.CLIENT_NAME + ' · ' + (contract.signed_at ? 'firmado' : contract.status),
+        body: contract.body_text, values: contract.values, ownerSignatureKey: contract.owner_signature_key, clientSignatureKey: contract.client_signature_key,
+        signedAt: contract.signed_at, signatureMethod: contract.signature_method, guardianName: contract.guardian_name, guardianId: contract.guardian_id,
+        createdAt: contract.signed_at || contract.created_at });
   return reply.type('application/pdf').header('Content-Disposition', 'inline; filename="contrato.pdf"').send(pdf);
 });
+const handwrittenContractSignatureSchema = z.object({ accepted: z.literal(true), signedName: z.string().trim().min(2).max(160),
+  signaturePng: z.string().max(600000), signatureStrokes: z.unknown(),
+  guardianName: z.string().trim().min(2).max(160).optional(), guardianId: z.string().trim().min(2).max(80).optional() });
+
+async function signContractRecord(transaction: any, contract: Record<string, any>, input: z.infer<typeof handwrittenContractSignatureSchema>,
+  request: FastifyRequest, method: 'portal' | 'presencial', staffUserId: string | null) {
+  if (normalizeContractName(input.signedName) !== normalizeContractName(contract.values.CLIENT_NAME))
+    return { error: 'Escribe el nombre completo tal como aparece en el contrato', code: 400 };
+  const age = edadEnFecha(contract.values.CLIENT_BIRTH_DATE, fechaDeNegocioPanama());
+  if (age != null && age < 18 && (!input.guardianName || !input.guardianId))
+    return { error: 'Para una persona menor de edad faltan el nombre y la identificación del representante legal', code: 400 };
+  let validated;
+  try { validated = await validateSignaturePng(input.signaturePng, input.signatureStrokes, true); }
+  catch (error) { return { error: (error as Error).message, code: 400 }; }
+  const basename = randomUUID();
+  const signatureKey = `signatures/client/${contract.owner_id}/${contract.client_id}/${contract.id}/${basename}.png`;
+  const strokesKey = `signatures/client/${contract.owner_id}/${contract.client_id}/${contract.id}/${basename}.strokes.json`;
+  await storePrivateSignature(signatureKey, 'image/png', validated.body);
+  await storePrivateSignature(strokesKey, 'application/json', Buffer.from(JSON.stringify(validated.strokes as SignatureStroke[])));
+  const signedAt = new Date();
+  const signer = age != null && age < 18 ? input.guardianName! : input.signedName;
+  const acceptance = `\n\nACEPTACIÓN CON FIRMA MANUSCRITA\nFirmado por ${signer} el ${contractTimestamp(signedAt)} (Panamá), método ${method}.` +
+    (age != null && age < 18 ? `\nRepresentante legal de ${input.signedName}: ${input.guardianName} · identificación ${input.guardianId}` : '');
+  const bodyText = contract.body_text + acceptance;
+  const pdf = await contractPdfWithSignatures({ title: 'Contrato de servicios', subtitle: contract.values.CLIENT_NAME + ' · firmado', body: bodyText,
+    values: contract.values, ownerSignatureKey: contract.owner_signature_key, clientSignatureImage: validated.body, signedAt,
+    signatureMethod: method, guardianName: age != null && age < 18 ? input.guardianName! : null,
+    guardianId: age != null && age < 18 ? input.guardianId! : null, createdAt: signedAt });
+  const hash = createHash('sha256').update(pdf).digest('hex');
+  const document = await guardarPdfContrato(transaction, contract.id, contract.owner_id, contract.client_id, pdf, `Contrato firmado ${contractTimestamp(signedAt).slice(0, 10)}.pdf`);
+  await transaction`UPDATE client_contracts SET status = 'reemplazado', replaced_by = ${contract.id}
+    WHERE client_id = ${contract.client_id} AND status = 'firmado' AND id <> ${contract.id}`;
+  const [signed] = await transaction`UPDATE client_contracts SET status = 'firmado', body_text = ${bodyText}, signed_at = ${signedAt},
+    signed_name = ${input.signedName}, signed_ip = ${request.ip}, signed_user_agent = ${request.headers['user-agent'] || null},
+    guardian_name = ${age != null && age < 18 ? input.guardianName! : null}, guardian_id = ${age != null && age < 18 ? input.guardianId! : null},
+    pdf_document_id = ${document.id}, pdf_sha256 = ${hash}, client_signature_key = ${signatureKey},
+    client_signature_strokes_key = ${strokesKey}, signature_method = ${method}, signed_in_person_by = ${staffUserId}
+    WHERE id = ${contract.id} RETURNING *`;
+  const noticeBody = method === 'presencial' ? 'El contrato se firmó presencialmente en el dispositivo de Eileen.' : 'El cliente firmó su contrato desde el portal.';
+  await transaction`INSERT INTO contract_notifications (owner_id, client_id, contract_id, title, body)
+    VALUES (${contract.owner_id}, ${contract.client_id}, ${contract.id}, ${'Contrato firmado · ' + contract.values.CLIENT_NAME}, ${noticeBody})
+    ON CONFLICT (contract_id) DO NOTHING`;
+  return { signed, noticeBody };
+}
+
 app.post('/api/contracts/:id/sign', { preHandler: requireAuth }, async (request, reply) => {
   const auth = request.user as AuthUser;
   if (auth.role !== 'client') return reply.code(403).send({ error: 'Solo el cliente puede firmar desde el portal' });
-  const input = z.object({ accepted: z.literal(true), signedName: z.string().trim().min(2).max(160),
-    guardianName: z.string().trim().min(2).max(160).optional(), guardianId: z.string().trim().min(2).max(80).optional() }).parse(request.body);
+  const input = handwrittenContractSignatureSchema.parse(request.body);
   const id = z.string().uuid().parse((request.params as { id: string }).id);
   const [owned] = await sql`SELECT cc.client_id FROM client_contracts cc JOIN clients c ON c.id = cc.client_id WHERE cc.id = ${id} AND c.portal_user_id = ${auth.sub}`;
   if (!owned) return reply.code(404).send({ error: 'Contrato pendiente no encontrado' });
@@ -2708,32 +2840,29 @@ app.post('/api/contracts/:id/sign', { preHandler: requireAuth }, async (request,
     await lockBillingClient(transaction, owned.client_id);
     const [contract] = await transaction`SELECT cc.*, c.full_name, c.birth_date FROM client_contracts cc JOIN clients c ON c.id = cc.client_id
       WHERE cc.id = ${id} AND c.portal_user_id = ${auth.sub} AND cc.status = 'enviado' FOR UPDATE OF cc`;
-    if (!contract) return null;
-    if (normalizeContractName(input.signedName) !== normalizeContractName(contract.values.CLIENT_NAME))
-      return { error: 'Escribe tu nombre completo tal como aparece en el contrato', code: 400 };
-    const age = edadEnFecha(contract.values.CLIENT_BIRTH_DATE, fechaDeNegocioPanama());
-    if (age != null && age < 18 && (!input.guardianName || !input.guardianId)) return { error: 'Para una persona menor de edad faltan el nombre y la identificación del representante legal', code: 400 };
-    const signedAt = new Date();
-    const acceptance = '\n\nACEPTACIÓN DIGITAL\nAceptado electrónicamente por ' + input.signedName + ' el ' + contractTimestamp(signedAt) + ' (Panamá).' +
-      (age != null && age < 18 ? '\nRepresentante legal: ' + input.guardianName + ' · identificación ' + input.guardianId : '');
-    const bodyText = contract.body_text + acceptance;
-    const pdf = await contractPdf({ title: 'Contrato de servicios', subtitle: contract.values.CLIENT_NAME + ' · firmado', body: bodyText, createdAt: signedAt });
-    const hash = createHash('sha256').update(pdf).digest('hex');
-    const document = await guardarPdfContrato(transaction, id, contract.owner_id, contract.client_id, pdf, `Contrato firmado ${contractTimestamp(signedAt).slice(0, 10)}.pdf`);
-    await transaction`UPDATE client_contracts SET status = 'reemplazado', replaced_by = ${id} WHERE client_id = ${contract.client_id} AND status = 'firmado' AND id <> ${id}`;
-    const [signed] = await transaction`UPDATE client_contracts SET status = 'firmado', body_text = ${bodyText}, signed_at = ${signedAt},
-      signed_name = ${input.signedName}, signed_ip = ${request.ip}, signed_user_agent = ${request.headers['user-agent'] || null},
-      guardian_name = ${age != null && age < 18 ? input.guardianName! : null}, guardian_id = ${age != null && age < 18 ? input.guardianId! : null},
-      pdf_document_id = ${document.id}, pdf_sha256 = ${hash} WHERE id = ${id} RETURNING *`;
-    await transaction`INSERT INTO contract_notifications (owner_id, client_id, contract_id, title, body)
-      VALUES (${contract.owner_id}, ${contract.client_id}, ${id}, ${'Contrato firmado · ' + contract.values.CLIENT_NAME}, 'El cliente firmó su contrato desde el portal.') ON CONFLICT (contract_id) DO NOTHING`;
-    return { signed };
+    return contract ? signContractRecord(transaction, contract, input, request, 'portal', null) : null;
   });
   if (!result) return reply.code(409).send({ error: 'Este contrato ya no está pendiente de firma' });
   if ('error' in result) return reply.code(result.code || 400).send({ error: result.error });
   await sendPushToUser(result.signed.owner_id, { title: 'Contrato firmado · ' + result.signed.values.CLIENT_NAME,
-    body: 'El cliente firmó su contrato desde el portal.', url: new URL('/#clients', config.APP_URL).toString() }).catch(error => app.log.warn({ err: error }, 'Push de contrato firmado'));
-  return result.signed;
+    body: result.noticeBody, url: new URL('/#clients', config.APP_URL).toString() }).catch(error => app.log.warn({ err: error }, 'Push de contrato firmado'));
+  return contractResponse(result.signed);
+});
+
+app.post('/api/contracts/:id/sign-in-person', { preHandler: requireStaff }, async (request, reply) => {
+  const auth = request.user as AuthUser; const input = handwrittenContractSignatureSchema.parse(request.body);
+  const id = z.string().uuid().parse((request.params as { id: string }).id);
+  const [owned] = await sql`SELECT client_id FROM client_contracts WHERE id = ${id} AND owner_id = ${auth.sub}`;
+  if (!owned) return reply.code(404).send({ error: 'Contrato pendiente no encontrado' });
+  const result = await sql.begin(async transaction => {
+    await lockBillingClient(transaction, owned.client_id);
+    const [contract] = await transaction`SELECT cc.*, c.full_name, c.birth_date FROM client_contracts cc JOIN clients c ON c.id = cc.client_id
+      WHERE cc.id = ${id} AND cc.owner_id = ${auth.sub} AND cc.status = 'enviado' FOR UPDATE OF cc`;
+    return contract ? signContractRecord(transaction, contract, input, request, 'presencial', auth.sub) : null;
+  });
+  if (!result) return reply.code(409).send({ error: 'Solo puedes firmar presencialmente un contrato enviado y pendiente' });
+  if ('error' in result) return reply.code(result.code || 400).send({ error: result.error });
+  return contractResponse(result.signed);
 });
 app.post('/api/clients/:id/contracts/paper', { preHandler: requireStaff }, async (request, reply) => {
   const auth = request.user as AuthUser; const clientId = z.string().uuid().parse((request.params as { id: string }).id);
@@ -2749,12 +2878,13 @@ app.post('/api/clients/:id/contracts/paper', { preHandler: requireStaff }, async
     const bytes = storageReady ? await downloadObject(document.object_key) : null;
     await transaction`UPDATE client_contracts SET status = 'reemplazado', replaced_by = ${contract.id} WHERE client_id = ${clientId} AND status = 'firmado' AND id <> ${contract.id}`;
     const [signed] = await transaction`UPDATE client_contracts SET status = 'firmado', signed_at = now(), signed_name = 'Firma en papel', pdf_document_id = ${document.id},
-      pdf_sha256 = ${bytes ? createHash('sha256').update(bytes.body).digest('hex') : null} WHERE id = ${contract.id} RETURNING *`;
+      pdf_sha256 = ${bytes ? createHash('sha256').update(bytes.body).digest('hex') : null}, signature_method = 'papel'
+      WHERE id = ${contract.id} RETURNING *`;
     return { signed };
   });
   if (!result) return reply.code(404).send({ error: 'Contrato no encontrado o ya firmado' });
   if ('error' in result) return reply.code(400).send(result);
-  return result.signed;
+  return contractResponse(result.signed);
 });
 app.patch('/api/clients/:id', { preHandler: requireStaff }, async (request, reply) => {
   const auth = request.user as AuthUser;
