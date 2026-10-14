@@ -177,7 +177,7 @@ test('contrato informativo distinto del cobro no modifica expediente, conceptos,
   assert.equal(preview.canSend, true); assert.match(preview.warnings.join(' '), /contrato dice \$333\.00.*cobra \$280\.00/i);
   const contract = ok(await api.post('/api/clients/' + s.client.id + '/contracts', { ...terms, send: true }));
   const signed = ok(await s.portal.post('/api/contracts/' + contract.id + '/sign', await signedBody(s.client.full_name)), 200);
-  assert.equal(signed.template_version, 3);
+  assert.equal(signed.template_version, 4, "plantilla vigente: v4 sin cláusula de feriados");
   assert.deepEqual(await commercialSnapshot(s.client.id), before);
   const pdf = await fetch(server.base + '/api/contracts/' + contract.id + '/pdf', { headers: { Authorization: 'Bearer ' + s.portalToken } });
   const text = pdfText(Buffer.from(await pdf.arrayBuffer()));
@@ -193,14 +193,14 @@ test('ventana contractual se valida en servidor y el texto usa las constantes in
   assert.equal(preview.canSend, true); assert.match(preview.bodyText, /lunes a viernes.*07:00 a 17:00.*24 horas/is);
   assert.match(preview.bodyText, /cancelaciones deben avisarse con al menos 24 horas/i);
   assert.match(preview.bodyText, /no se guardan reprogramaciones para el mes siguiente/i);
-  assert.match(preview.bodyText, /feriados nacionales de Panamá/i);
+  assert.doesNotMatch(preview.bodyText, /feriado/i, 'Joel omitió la cláusula de feriados');
   const pack = await scenario('paquete');
   const packagePreview = ok(await api.post('/api/clients/' + pack.client.id + '/contracts/preview', { ...base, templateKey: 'paquete', rescheduleFrom: '07:00', rescheduleTo: '17:00' }), 200);
   assert.match(packagePreview.bodyText, /vigencia del paquete de 42 días/i);
   const routines = await scenario('rutinas');
   const routinePreview = ok(await api.post('/api/clients/' + routines.client.id + '/contracts/preview', { ...base, templateKey: 'rutinas', quantity: 4, rescheduleFrom: '07:00', rescheduleTo: '17:00' }), 200);
   assert.doesNotMatch(routinePreview.bodyText, /cancelaciones deben|feriados nacionales|mes siguiente|vigencia del paquete/i);
-  assert.match(routinePreview.bodyText, /podrá dejar programada una rutina para un día feriado/i);
+  assert.doesNotMatch(routinePreview.bodyText, /feriado/i);
 });
 test('el horario precarga lunes a viernes recortado a 17:00; sin horario queda vacío y bloquea el envío', async () => {
   const s = await scenario();

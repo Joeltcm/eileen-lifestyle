@@ -45,10 +45,4 @@ export function contractTimestamp(date = new Date()) {
   const value = (type: string) => parts.find(part => part.type === type)?.value || '';
   return `${value('day')}-${value('month')}-${value('year')} ${value('hour')}:${value('minute')}`;
 }
-
-// Regla económica de la clase que cae en feriado (Eileen). null = sin decidir: mensualidad y paquete no se pueden ENVIAR hasta definirla.
-// Cuando Eileen decida, poner aquí la frase exacta que irá en la cláusula de feriados.
-// Decisión de Joel/Eileen (14-10-2026): la clase que coincide con un feriado se descuenta del plan.
-export const HOLIDAY_CLASS_RULE: string | null = 'La clase que coincide con un día feriado cuenta como clase del plan y se descuenta.';
-// Cliente a crédito: falta que Joel/Eileen digan qué pasa con la clase de un feriado (no hay plan del que descontar). null = la cláusula no lo menciona.
-export const HOLIDAY_CLASS_RULE_CREDIT: string | null = null;
+// Feriados: Joel pidió OMITIR la cláusula (14-10-2026). No hay regla de feriados en los contratos.

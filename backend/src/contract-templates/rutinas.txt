@@ -8,14 +8,12 @@ En {{CONTRACT_CITY}}, el {{START_DATE}}, entre {{OWNER_LEGAL_NAME}}, identificac
 
 3. Coordinaciones. Las sesiones de seguimiento o entregas que requieran coordinarse se realizarán de lunes a viernes, dentro del horario de disponibilidad que Eileen establece para este contrato: de {{RESCHEDULE_FROM}} a {{RESCHEDULE_TO}}. Eileen podrá ajustar esa disponibilidad según su agenda, avisando al cliente con al menos {{RESCHEDULE_CHANGE_NOTICE_HOURS}} horas de anticipación. Toda coordinación queda sujeta a cupo y se acuerda entre ambas partes.
 
-4. Feriados. Eileen podrá dejar programada una rutina para un día feriado.
+4. Uso responsable. Los videos son de uso personal y se usan como guía. La persona declara que informó sus condiciones de salud, registradas en su expediente, y comunicará cambios; seguirá las indicaciones y se detendrá ante dolor o malestar. El entrenamiento no sustituye atención médica. Reconoce los riesgos del ejercicio sin excluir responsabilidades que la ley no permita excluir.
 
-5. Uso responsable. Los videos son de uso personal y se usan como guía. La persona declara que informó sus condiciones de salud, registradas en su expediente, y comunicará cambios; seguirá las indicaciones y se detendrá ante dolor o malestar. El entrenamiento no sustituye atención médica. Reconoce los riesgos del ejercicio sin excluir responsabilidades que la ley no permita excluir.
+5. Datos. El tratamiento de datos se realiza conforme a la Ley 81 de 2019 de Panamá. La aplicación usa un servicio externo de inteligencia artificial para proponer rutinas e interpretar evaluaciones. Las fotos de progreso solo se usan con consentimiento aparte.
 
-6. Datos. El tratamiento de datos se realiza conforme a la Ley 81 de 2019 de Panamá. La aplicación usa un servicio externo de inteligencia artificial para proponer rutinas e interpretar evaluaciones. Las fotos de progreso solo se usan con consentimiento aparte.
+6. Información de facturación. Este contrato describe el servicio acordado; los cobros se emiten conforme a la facturación vigente del cliente. Firmarlo no modifica por sí mismo conceptos de facturación, facturas emitidas ni saldos.
 
-7. Información de facturación. Este contrato describe el servicio acordado; los cobros se emiten conforme a la facturación vigente del cliente. Firmarlo no modifica por sí mismo conceptos de facturación, facturas emitidas ni saldos.
-
-8. Aceptación. Este documento es un comprobante interno de servicios; no sustituye una factura fiscal.
+7. Aceptación. Este documento es un comprobante interno de servicios; no sustituye una factura fiscal.
 
 {{ACCEPTANCE_BLOCK}}

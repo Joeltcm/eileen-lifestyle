@@ -43,13 +43,12 @@ test('un escaneo en papel subido a mano sigue apareciendo en los documentos', as
   assert.ok(docs.some(d => d.id === doc.id));
 });
 
-test('mientras Eileen no decida la regla de feriados, el contrato NO lleva un texto "[pendiente…]" (se firma limpio) y lleva la regla decidida', async () => {
+test('los contratos no llevan cláusula de feriados (Joel la omitió) ni ningún texto pendiente', async () => {
   const s = await escenario();
   const preview = ok(await api.post(`/api/clients/${s.client.id}/contracts/preview`, { templateKey: 'mensualidad', quantity: 8, price: 200, rescheduleFrom: '08:00', rescheduleTo: '12:00' }), 200);
-  assert.doesNotMatch(preview.bodyText, /\[pendiente|\{\{/i, 'ningún marcador ni texto pendiente en el cuerpo');
-  assert.match(preview.bodyText, /feriados nacionales de Panamá no hay clases/i);
-  // Joel/Eileen decidieron (14-10-2026): la clase del feriado se descuenta del plan.
-  assert.match(preview.bodyText, /feriado cuenta como clase del plan y se descuenta/i);
+  assert.doesNotMatch(preview.bodyText, /feriado|\[pendiente|\{\{/i);
+  assert.match(preview.bodyText, /Rutina sustitutiva\./);
+  assert.ok(!(preview.warnings || []).some(w => /feriado/i.test(w)), 'sin avisos de feriados');
 });
 
 test('un contrato por TIPO DE CLIENTE: a crédito -> contrato de crédito; anticipado -> mensualidad anticipada; nunca mezclados', async () => {
