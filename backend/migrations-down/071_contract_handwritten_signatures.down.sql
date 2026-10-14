@@ -3,6 +3,7 @@ DO $$
 BEGIN
   IF EXISTS (SELECT 1 FROM client_contracts WHERE client_signature_key IS NOT NULL OR client_signature_strokes_key IS NOT NULL OR signature_method IS NOT NULL OR signed_in_person_by IS NOT NULL OR owner_signature_key IS NOT NULL)
      OR EXISTS (SELECT 1 FROM account_settings WHERE owner_signature_key IS NOT NULL)
+     OR EXISTS (SELECT 1 FROM client_contracts WHERE template_key = 'credito')
   THEN
     IF COALESCE(current_setting('billing.allow_destructive_down', true), '') <> 'on' THEN
       RAISE EXCEPTION 'hay firmas manuscritas; la reversa 071 exige orden expresa con billing.allow_destructive_down = on';
@@ -13,6 +14,9 @@ END $$;
 DROP TRIGGER IF EXISTS client_contracts_immutable ON client_contracts;
 DROP FUNCTION IF EXISTS protect_signed_contract();
 ALTER TABLE client_contracts DROP CONSTRAINT IF EXISTS client_contracts_signature_method_check;
+DELETE FROM client_contracts WHERE template_key = 'credito' AND signed_at IS NULL;
+ALTER TABLE client_contracts DROP CONSTRAINT IF EXISTS client_contracts_template_key_check;
+ALTER TABLE client_contracts ADD CONSTRAINT client_contracts_template_key_check CHECK (template_key IN ('mensualidad', 'paquete', 'rutinas'));
 ALTER TABLE client_contracts DROP COLUMN IF EXISTS owner_signature_key;
 ALTER TABLE client_contracts DROP COLUMN IF EXISTS signed_in_person_by;
 ALTER TABLE client_contracts DROP COLUMN IF EXISTS signature_method;

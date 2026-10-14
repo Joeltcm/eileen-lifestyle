@@ -43,10 +43,29 @@ test('un escaneo en papel subido a mano sigue apareciendo en los documentos', as
   assert.ok(docs.some(d => d.id === doc.id));
 });
 
-test('mientras Eileen no decida la regla de feriados, el contrato NO lleva un texto "[pendiente…]" (se firma limpio) y Eileen ve el aviso', async () => {
+test('mientras Eileen no decida la regla de feriados, el contrato NO lleva un texto "[pendiente…]" (se firma limpio) y lleva la regla decidida', async () => {
   const s = await escenario();
   const preview = ok(await api.post(`/api/clients/${s.client.id}/contracts/preview`, { templateKey: 'mensualidad', quantity: 8, price: 200, rescheduleFrom: '08:00', rescheduleTo: '12:00' }), 200);
   assert.doesNotMatch(preview.bodyText, /\[pendiente|\{\{/i, 'ningún marcador ni texto pendiente en el cuerpo');
   assert.match(preview.bodyText, /feriados nacionales de Panamá no hay clases/i);
-  assert.ok((preview.warnings || []).some(w => /feriado/i.test(w)), `aviso no bloqueante a Eileen: ${JSON.stringify(preview.warnings)}`);
+  // Joel/Eileen decidieron (14-10-2026): la clase del feriado se descuenta del plan.
+  assert.match(preview.bodyText, /feriado cuenta como clase del plan y se descuenta/i);
+});
+
+test('un contrato por TIPO DE CLIENTE: a crédito -> contrato de crédito; anticipado -> mensualidad anticipada; nunca mezclados', async () => {
+  // Cliente a crédito.
+  const cred = ok(await api.post('/api/clients', { fullName: 'Julio Credito', email: 'julio.credito@prueba.test', cutoffDay: Number(today().slice(-2)), idDocument: 'PASAPORTE-CRED', paymentMode: 'no_anticipado', creditSessionPrice: 25 }));
+  const cp = ok(await api.post(`/api/clients/${cred.id}/contracts/preview`, { quantity: 8, rescheduleFrom: '08:00', rescheduleTo: '12:00' }), 200);
+  assert.equal(cp.templateKey, 'credito'); assert.equal(cp.canSend, true, JSON.stringify(cp.missing));
+  assert.match(cp.bodyText, /CLIENTE A CRÉDITO/); assert.match(cp.bodyText, /\$25\.00 USD/); assert.match(cp.bodyText, /se cobra/);
+  assert.doesNotMatch(cp.bodyText, /se descuenta del plan|MENSUALIDAD ANTICIPADA|\[pendiente/i);
+  assert.equal((await api.post(`/api/clients/${cred.id}/contracts/preview`, { templateKey: 'mensualidad' })).estado, 409, 'a un cliente a crédito no se le genera mensualidad');
+  const sent = ok(await api.post(`/api/clients/${cred.id}/contracts`, { quantity: 8, rescheduleFrom: '08:00', rescheduleTo: '12:00', send: true }));
+  assert.equal(sent.template_key, 'credito', 'el CHECK de la 071 admite el modelo de crédito');
+  // Cliente anticipado.
+  const ant = await escenario();
+  const ap = ok(await api.post(`/api/clients/${ant.client.id}/contracts/preview`, { quantity: 8, price: 200, rescheduleFrom: '08:00', rescheduleTo: '12:00', paymentMode: 'no_anticipado', creditClassPrice: 30 }), 200);
+  assert.equal(ap.templateKey, 'mensualidad'); assert.match(ap.bodyText, /MENSUALIDAD ANTICIPADA/); assert.match(ap.bodyText, /pago es anticipado/);
+  assert.doesNotMatch(ap.bodyText, /crédito/i, 'el contrato anticipado no menciona crédito aunque se pida');
+  assert.equal((await api.post(`/api/clients/${ant.client.id}/contracts/preview`, { templateKey: 'credito' })).estado, 409);
 });

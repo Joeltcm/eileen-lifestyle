@@ -133,3 +133,41 @@ test('071: la reversa se niega con firmas sin orden expresa y funciona con la or
   assert.equal(columns.length, 0);
   await db.unsafe(await readFile(new URL('../migrations/071_contract_handwritten_signatures.sql', import.meta.url), 'utf8'));
 });
+
+// Revisión de Claude (v306): la palma apoyada entre trazos del Apple Pencil no dibuja, y otro dedo no corta el trazo en curso.
+test('rechazo de palma ENTRE trazos del lápiz y un solo puntero a la vez: la palma no dibuja ni corta el trazo', async () => {
+  const fixture = await signaturePayload();
+  for (const width of [375, 820]) {
+    const page = await abrirPantalla({ baseApi: server.base, token, ancho: width });
+    try {
+      await esperar(() => typeof page.window.openSignatureCapture === 'function', { mensaje: 'carga del componente de firma' });
+      Object.defineProperty(page.window, 'innerHeight', { value: width === 820 ? 1180 : 760, configurable: true });
+      const fakeContext = canvas => ({ canvas, setTransform() {}, scale() {}, beginPath() {}, moveTo() {}, lineTo() {}, stroke() {}, clearRect() {}, drawImage() {}, putImageData() {},
+        getImageData() { const data = new Uint8ClampedArray(canvas.width * canvas.height * 4); for (let y = 20; y < Math.min(canvas.height, 70); y += 1) for (let x = 30; x < Math.min(canvas.width, 220); x += 1) { const i = (y * canvas.width + x) * 4; data[i] = 40; data[i + 1] = 30; data[i + 2] = 35; data[i + 3] = 255; } return { data }; } });
+      page.window.HTMLCanvasElement.prototype.getContext = function () { return this.__context ||= fakeContext(this); };
+      page.window.HTMLCanvasElement.prototype.toDataURL = () => fixture.signaturePng;
+      page.window.__capturedSignature = undefined; page.window.openSignatureCapture({ title: 'Prueba de firma', allowUpload: true, previewName: 'Entrenadora Ficticia', previewLegalId: 'EID-01' }).then(value => { page.window.__capturedSignature = value; });
+      const dialog = await esperar(() => page.q('dialog.signature-dialog-host[open]'));
+      assert.match(dialog.textContent, /Entrenadora Ficticia/); assert.match(dialog.textContent, /EID-01/); assert.match(dialog.textContent, /Volver a intentar/);
+      const canvas = page.q('canvas', dialog); const pad = page.q('.signature-pad', dialog);
+      const rect = { left: 0, top: 0, width: width === 375 ? 320 : 620, height: 190, right: width === 375 ? 320 : 620, bottom: 190, x: 0, y: 0, toJSON() {} };
+      canvas.getBoundingClientRect = () => rect; pad.getBoundingClientRect = () => rect; await page.quieta(30);
+      const pointer = (type, x, y, pointerType = 'pen') => { const event = new page.window.Event(type, { bubbles: true, cancelable: true }); Object.defineProperties(event, {
+        clientX: { value: x }, clientY: { value: y }, pointerId: { value: pointerType === 'pen' ? 1 : 2 }, pointerType: { value: pointerType }, pressure: { value: .6 }, getCoalescedEvents: { value: () => [event] }
+      }); return event; };
+      // Trazo 1 con el lápiz.
+      canvas.dispatchEvent(pointer('pointerdown', 20, 100)); for (const [x, y] of [[60, 50], [100, 90], [140, 40]]) canvas.dispatchEvent(pointer('pointermove', x, y));
+      // La palma se apoya ENTRE trazos (el lápiz ya se levantó): no debe dibujar.
+      canvas.dispatchEvent(pointer('pointerup', 140, 40));
+      canvas.dispatchEvent(pointer('pointerdown', 200, 150, 'touch')); canvas.dispatchEvent(pointer('pointermove', 260, 170, 'touch')); canvas.dispatchEvent(pointer('pointerup', 260, 170, 'touch'));
+      // Trazo 2 con el lápiz; a mitad, un toque del dedo NO corta ni mezcla el trazo.
+      canvas.dispatchEvent(pointer('pointerdown', 160, 120)); canvas.dispatchEvent(pointer('pointermove', 190, 60));
+      canvas.dispatchEvent(pointer('pointerup', 300, 180, 'touch'));
+      for (const [x, y] of [[220, 110], [250, 50], [280, 95]]) canvas.dispatchEvent(pointer('pointermove', x, y));
+      canvas.dispatchEvent(pointer('pointerup', 280, 95)); page.clic(page.q('[data-signature-use]', dialog));
+      const captured = await esperar(() => page.window.__capturedSignature);
+      assert.match(captured.imageData, /^data:image\/png;base64,/); assert.equal(captured.strokes.length, 2, `solo los 2 trazos del lápiz (hay ${captured.strokes.length})`); assert.equal(captured.strokes[1].length, 5, 'el trazo 2 sigue entero tras el toque del dedo');
+      assert.deepEqual(page.errores, []);
+    } finally { await page.cerrar(); }
+  }
+});

@@ -14,6 +14,11 @@ ALTER TABLE client_contracts DROP CONSTRAINT IF EXISTS client_contracts_signatur
 ALTER TABLE client_contracts ADD CONSTRAINT client_contracts_signature_method_check
   CHECK (signature_method IS NULL OR signature_method IN ('portal', 'presencial', 'papel'));
 
+-- Un contrato por tipo de cliente (Joel, 14-10-2026): se añade el modelo 'credito' para clientes a crédito.
+ALTER TABLE client_contracts DROP CONSTRAINT IF EXISTS client_contracts_template_key_check;
+ALTER TABLE client_contracts ADD CONSTRAINT client_contracts_template_key_check
+  CHECK (template_key IN ('mensualidad', 'paquete', 'rutinas', 'credito'));
+
 -- Incluye la nueva evidencia en la misma barrera de inmutabilidad del contrato.
 DROP TRIGGER IF EXISTS client_contracts_immutable ON client_contracts;
 CREATE OR REPLACE FUNCTION protect_signed_contract() RETURNS trigger LANGUAGE plpgsql AS $$

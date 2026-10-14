@@ -221,7 +221,9 @@ test('avisos de precio, modalidad y otro pagador son informativos y no bloquean'
   ok(await api.post('/api/clients/' + own.client.id + '/billing-subscriptions', { beneficiaryClientId: own.client.id,
     payerClientId: own.client.id, kind: 'monthly', price: 280, sessionsReference: 8, startsOn: today() }));
   const different = ok(await api.post('/api/clients/' + own.client.id + '/contracts/preview', { price: 300, paymentMode: 'no_anticipado', creditClassPrice: 25 }), 200);
-  assert.equal(different.canSend, true); assert.match(different.warnings.join(' '), /\$300\.00.*\$280\.00/); assert.match(different.warnings.join(' '), /pago a crédito.*anticipado/i);
+  assert.equal(different.canSend, true); assert.match(different.warnings.join(' '), /\$300\.00.*\$280\.00/);
+  // La modalidad ya no se elige en el contrato: sale del tipo de cliente (anticipado), aunque se pida otra.
+  assert.equal(different.terms?.paymentMode ?? different.values.PAYMENT_MODE_KEY, 'anticipado'); assert.doesNotMatch(different.bodyText, /crédito/i);
   const payer = await scenario(); const beneficiary = await scenario();
   ok(await api.post('/api/clients/' + beneficiary.client.id + '/billing-subscriptions', { beneficiaryClientId: beneficiary.client.id,
     payerClientId: payer.client.id, kind: 'monthly', price: 300, sessionsReference: 12, startsOn: today() }));

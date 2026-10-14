@@ -1395,17 +1395,20 @@ function openSignatureCapture({ title = 'Firma manuscrita', allowUpload = false,
       context.putImageData(image, 0, 0);
       syncPreview();
     };
+    // Rechazo de palma: en cuanto aparece el Apple Pencil, los toques del dedo/palma se ignoran durante TODA la firma (no solo mientras el lápiz toca la
+    // pantalla: entre trazo y trazo la mano sigue apoyada). Y un solo puntero dibuja a la vez: otro dedo no corta ni mezcla el trazo en curso.
+    let activePointer = null;
     canvas.addEventListener('pointerdown', event => {
-      if (uploaded || (penActive && event.pointerType === 'touch')) return;
+      if (uploaded || active || (penActive && event.pointerType === 'touch')) return;
       if (event.pointerType === 'pen') penActive = true;
-      event.preventDefault(); canvas.setPointerCapture?.(event.pointerId); active = [point(event)]; strokes.push(active);
+      event.preventDefault(); canvas.setPointerCapture?.(event.pointerId); activePointer = event.pointerId; active = [point(event)]; strokes.push(active);
     });
     canvas.addEventListener('pointermove', event => {
-      if (!active || uploaded || (penActive && event.pointerType === 'touch')) return;
+      if (!active || uploaded || event.pointerId !== activePointer) return;
       event.preventDefault(); const coalesced = event.getCoalescedEvents?.(); const events = coalesced?.length ? coalesced : [event];
       for (const sample of events) { const next = point(sample); line(active[active.length - 1], next); active.push(next); }
     });
-    const finish = event => { if (!active) return; event.preventDefault(); active = null; if (event.pointerType === 'pen') penActive = false; syncPreview(); };
+    const finish = event => { if (!active || event.pointerId !== activePointer) return; event.preventDefault(); active = null; activePointer = null; syncPreview(); };
     canvas.addEventListener('pointerup', finish); canvas.addEventListener('pointercancel', finish);
     host.querySelector('[data-signature-undo]').onclick = () => { uploaded = false; uploadImage = null; strokes.pop(); redraw(); syncPreview(); };
     const clearSignature = () => { uploaded = false; uploadImage = null; strokes.length = 0; redraw(); syncPreview(); errorBox.hidden = true; };
@@ -5199,17 +5202,19 @@ function contractEditor(client) {
   const numberOrNull = value => value === '' || value == null ? null : Number(value);
   const optionLabel = option => `${option.templateKey === 'rutinas' ? 'Rutinas' : option.templateKey === 'paquete' ? 'Paquete' : 'Mensualidad'} · ${escapeHtml(option.name)} · ${option.quantity} ${option.unitLabel}${option.quantity === 1 ? '' : 's'} · ${money.format(option.price)} → ${money.format(option.price / option.quantity)} por ${option.unitLabel}`;
   const showError = error => { box.innerHTML = `<p class="empty">${escapeHtml(error.message)}</p>`; };
-  api(`/api/clients/${client.id}/contracts/preview`, { method: 'POST', body: { templateKey: 'mensualidad' } }).then(initial => {
+  api(`/api/clients/${client.id}/contracts/preview`, { method: 'POST', body: {} }).then(initial => {
     if (!box.isConnected) return;
     const terms = initial.terms || initial.defaults;
     const options = (initial.options || []).slice(0, 3);
+    // El contrato sale según el TIPO DE CLIENTE del expediente: a crédito -> contrato de crédito; anticipado -> mensualidad, paquete o rutinas.
+    const isCredit = (terms.templateKey || initial.templateKey) === 'credito' || terms.paymentMode === 'no_anticipado';
     box.innerHTML = `<form id="contract-editor"><p class="eyebrow">CONTRATO INFORMATIVO · BORRADOR PARA REVISIÓN LEGAL</p><h2>Generar contrato</h2>
       <p class="section-note">Estos términos quedan únicamente en el contrato. No cambian el expediente, el plan de facturación, las facturas ni los saldos.</p>
       <div id="contract-missing"></div><div id="contract-warning"></div>
-      <label>Modelo<select name="templateKey"><option value="mensualidad">Mensualidad (sugerida)</option><option value="paquete">Paquete</option><option value="rutinas">Rutinas personalizadas</option></select></label>
+      ${isCredit ? '<p class="contract-type"><b>Contrato de cliente a crédito</b> · según su expediente (paga cada clase al cierre del mes).</p><input name="templateKey" type="hidden" value="credito" />' : '<p class="contract-type"><b>Cliente de pago anticipado</b> · según su expediente.</p><label>Modelo<select name="templateKey"><option value="mensualidad">Mensualidad anticipada (sugerida)</option><option value="paquete">Paquete</option><option value="rutinas">Rutinas personalizadas</option></select></label>'}
       <input name="planName" type="hidden" value="${escapeHtml(terms.planName || 'Acuerdo personalizado')}" />
-      <div class="form-row"><label><span id="contract-quantity-label">Sesiones al mes</span><input name="quantity" type="number" min="1" max="366" value="${terms.quantity || ''}" required /></label><label>Precio declarado (USD)<input name="price" type="number" min="0.01" max="100000" step="0.01" value="${terms.price || ''}" required /></label></div>
-      <div class="form-row"><label>Modalidad de pago<select name="paymentMode"><option value="anticipado">Anticipado</option><option value="no_anticipado">A crédito</option></select></label><label id="contract-credit-price">Precio por clase a crédito<input name="creditClassPrice" type="number" min="0.01" max="100000" step="0.01" value="${terms.creditClassPrice || ''}" /></label></div>
+      <div class="form-row"><label><span id="contract-quantity-label">Sesiones al mes</span><input name="quantity" type="number" min="1" max="366" value="${terms.quantity || ''}" required /></label>${isCredit ? '<input name="price" type="hidden" value="" />' : `<label>Precio declarado (USD)<input name="price" type="number" min="0.01" max="100000" step="0.01" value="${terms.price || ''}" required /></label>`}</div>
+      <input name="paymentMode" type="hidden" value="${isCredit ? 'no_anticipado' : 'anticipado'}" />${isCredit ? `<label id="contract-credit-price">Precio por clase (USD)<input name="creditClassPrice" type="number" min="0.01" max="100000" step="0.01" value="${terms.creditClassPrice || ''}" required /></label>` : '<input name="creditClassPrice" type="hidden" value="" />'}
       <div class="form-row"><label>Día de corte<input name="cutoffDay" type="number" min="1" max="31" value="${terms.cutoffDay || client.cutoffDay || 1}" required /></label><label>Inicio<input name="startsOn" type="date" value="${escapeHtml(terms.startsOn || dateKey(today))}" required /></label></div>
       <label>Meses de compromiso<input name="commitmentMonths" type="number" min="0" max="60" value="${terms.commitmentMonths || 0}" /><small>0 = mes a mes</small></label>
       <fieldset class="contract-reschedule"><legend>Ventana de reprogramación · lunes a viernes</legend><div class="form-row"><label>Desde<input name="rescheduleFrom" type="time" value="${escapeHtml(terms.rescheduleFrom || '')}" required /></label><label>Hasta<input name="rescheduleTo" type="time" max="17:00" value="${escapeHtml(terms.rescheduleTo || '')}" required /></label></div><small>La hora final no puede pasar de las 17:00. Si Eileen cambia su disponibilidad, avisará con 24 horas de anticipación.</small></fieldset>
@@ -5217,15 +5222,14 @@ function contractEditor(client) {
       <label class="checkbox-line"><input name="send" type="checkbox" /> Enviar al portal al guardar</label>
       <button type="button" class="secondary wide-button" id="preview-contract">Actualizar vista previa</button><button class="primary wide-button" id="save-contract">Guardar contrato</button><div id="contract-preview"></div></form>`;
     const form = box.querySelector('form'); const preview = box.querySelector('#contract-preview');
-    form.elements.templateKey.value = terms.templateKey || 'mensualidad'; form.elements.paymentMode.value = terms.paymentMode || 'anticipado';
+    if (!isCredit) form.elements.templateKey.value = terms.templateKey && terms.templateKey !== 'credito' ? terms.templateKey : 'mensualidad';
     const payload = send => ({ templateKey: form.elements.templateKey.value, quantity: numberOrNull(form.elements.quantity.value), price: numberOrNull(form.elements.price.value), paymentMode: form.elements.paymentMode.value,
       creditClassPrice: numberOrNull(form.elements.creditClassPrice.value), cutoffDay: numberOrNull(form.elements.cutoffDay.value), startsOn: form.elements.startsOn.value || null,
       commitmentMonths: Number(form.elements.commitmentMonths.value || 0), rescheduleFrom: form.elements.rescheduleFrom.value || null,
       rescheduleTo: form.elements.rescheduleTo.value || null, planName: form.elements.planName.value || 'Acuerdo personalizado', send });
     const syncFields = () => {
-      const key = form.elements.templateKey.value; const credit = form.elements.paymentMode.value === 'no_anticipado';
-      box.querySelector('#contract-quantity-label').textContent = key === 'rutinas' ? 'Rutinas al mes' : key === 'paquete' ? 'Sesiones del paquete' : 'Sesiones al mes';
-      box.querySelector('#contract-credit-price').hidden = !credit;
+      const key = form.elements.templateKey.value;
+      box.querySelector('#contract-quantity-label').textContent = key === 'credito' ? 'Clases por mes acordadas' : key === 'rutinas' ? 'Rutinas al mes' : key === 'paquete' ? 'Sesiones del paquete' : 'Sesiones al mes';
     };
     const renderPreview = result => {
       box.querySelector('#contract-missing').innerHTML = result.missing?.length ? `<div class="contract-missing"><b>Falta completar:</b> ${escapeHtml(result.missing.join(', '))}. Puedes revisar el expediente o Ajustes de la cuenta si se trata de datos personales o legales.</div>` : '';
@@ -5237,11 +5241,10 @@ function contractEditor(client) {
     box.querySelectorAll('[data-contract-option]').forEach(button => button.onclick = async () => {
       const option = options[Number(button.dataset.contractOption)];
       form.elements.templateKey.value = option.templateKey; form.elements.quantity.value = option.quantity; form.elements.price.value = option.price;
-      form.elements.paymentMode.value = option.paymentMode; form.elements.creditClassPrice.value = option.creditClassPrice || '';
       form.elements.cutoffDay.value = option.cutoffDay; form.elements.planName.value = option.planName; syncFields();
       try { await refreshPreview(); toast('Opción copiada al contrato; el expediente y el cobro no cambiaron'); } catch (error) { toast(error.message, true); }
     });
-    form.elements.templateKey.onchange = syncFields; form.elements.paymentMode.onchange = syncFields; syncFields(); renderPreview(initial);
+    form.elements.templateKey.onchange = syncFields; syncFields(); renderPreview(initial);
     box.querySelector('#preview-contract').onclick = () => refreshPreview().catch(error => toast(error.message, true));
     form.onsubmit = async event => {
       event.preventDefault(); const sending = form.elements.send.checked;

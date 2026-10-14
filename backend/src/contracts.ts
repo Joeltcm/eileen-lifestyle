@@ -1,7 +1,9 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
-export const contractTemplateKeys = ['mensualidad', 'paquete', 'rutinas'] as const;
+// Un contrato por TIPO DE CLIENTE (Joel, 14-10-2026): el cliente a crédito firma el de crédito; el anticipado, mensualidad (o paquete / rutinas,
+// que también se pagan por adelantado). Nunca un contrato general que mezcle las dos modalidades.
+export const contractTemplateKeys = ['mensualidad', 'paquete', 'rutinas', 'credito'] as const;
 export type ContractTemplateKey = typeof contractTemplateKeys[number];
 export const CONTRACT_TERMINATION_NOTICE_DAYS = 5;
 export const CANCELLATION_NOTICE_HOURS = 24;
@@ -9,7 +11,7 @@ export const RESCHEDULE_CHANGE_NOTICE_HOURS = 24;
 export const RESCHEDULE_LATEST_END = '17:00';
 
 const templateNames: Record<ContractTemplateKey, string> = {
-  mensualidad: 'mensualidad.txt', paquete: 'paquete.txt', rutinas: 'rutinas.txt'
+  mensualidad: 'mensualidad.txt', paquete: 'paquete.txt', rutinas: 'rutinas.txt', credito: 'credito.txt'
 };
 
 function templatePath(name: string) {
@@ -46,4 +48,7 @@ export function contractTimestamp(date = new Date()) {
 
 // Regla económica de la clase que cae en feriado (Eileen). null = sin decidir: mensualidad y paquete no se pueden ENVIAR hasta definirla.
 // Cuando Eileen decida, poner aquí la frase exacta que irá en la cláusula de feriados.
-export const HOLIDAY_CLASS_RULE: string | null = null;
+// Decisión de Joel/Eileen (14-10-2026): la clase que coincide con un feriado se descuenta del plan.
+export const HOLIDAY_CLASS_RULE: string | null = 'La clase que coincide con un día feriado cuenta como clase del plan y se descuenta.';
+// Cliente a crédito: falta que Joel/Eileen digan qué pasa con la clase de un feriado (no hay plan del que descontar). null = la cláusula no lo menciona.
+export const HOLIDAY_CLASS_RULE_CREDIT: string | null = null;
