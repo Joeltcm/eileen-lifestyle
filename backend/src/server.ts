@@ -2494,6 +2494,7 @@ const contractDraftSchema = z.object({
   rescheduleFrom: optionalContractTime,
   rescheduleTo: optionalContractTime,
   planName: z.union([z.string().trim().max(160), z.null()]).optional(),
+  isTest: z.boolean().optional(),
   send: z.boolean().default(false)
 }).superRefine((input, context) => {
   if (input.rescheduleTo && input.rescheduleTo > RESCHEDULE_LATEST_END) context.addIssue({
@@ -2700,7 +2701,7 @@ app.get('/api/clients/:id/contracts', { preHandler: requireStaff }, async (reque
   const [client] = await sql`SELECT id FROM clients WHERE id = ${clientId} AND owner_id = ${auth.sub}`;
   if (!client) return reply.code(404).send({ error: 'Cliente no encontrado' });
   return sql`SELECT id, template_key, template_version, status, values, sent_at, signed_at, signed_name, guardian_name, pdf_document_id, pdf_sha256,
-    signature_method, signed_in_person_by, (client_signature_key IS NOT NULL) AS has_handwritten_signature, created_at
+    signature_method, signed_in_person_by, (client_signature_key IS NOT NULL) AS has_handwritten_signature, is_test, created_at
     FROM client_contracts WHERE client_id = ${clientId} AND owner_id = ${auth.sub} ORDER BY created_at DESC`;
 });
 app.post('/api/clients/:id/contracts/preview', { preHandler: requireStaff }, async (request, reply) => {
@@ -2724,8 +2725,8 @@ app.post('/api/clients/:id/contracts', { preHandler: requireStaff }, async (requ
     if (input.send && material.missing.length) return { missing: material.missing };
     const status = input.send ? 'enviado' : 'borrador';
     const owner = await currentOwnerSignature(transaction, auth.sub);
-    const [contract] = await transaction`INSERT INTO client_contracts (owner_id, client_id, template_key, template_version, status, values, body_text, sent_at, created_by, owner_signature_key)
-      VALUES (${auth.sub}, ${clientId}, ${material.key}, ${material.version}, ${status}, ${transaction.json(material.values)}, ${material.bodyText}, ${input.send ? transaction`now()` : null}, ${auth.sub}, ${owner.key}) RETURNING *`;
+    const [contract] = await transaction`INSERT INTO client_contracts (owner_id, client_id, template_key, template_version, status, values, body_text, sent_at, created_by, owner_signature_key, is_test)
+      VALUES (${auth.sub}, ${clientId}, ${material.key}, ${material.version}, ${status}, ${transaction.json(material.values)}, ${material.bodyText}, ${input.send ? transaction`now()` : null}, ${auth.sub}, ${owner.key}, ${Boolean(input.isTest)}) RETURNING *`;
     const pdf = await contractPdfWithSignatures({ title: 'Contrato de servicios', subtitle: material.row.full_name + ' · ' + status, body: material.bodyText,
       values: material.values, ownerSignatureKey: owner.key });
     const document = await guardarPdfContrato(transaction, contract.id, auth.sub, clientId, pdf);
@@ -2736,6 +2737,69 @@ app.post('/api/clients/:id/contracts', { preHandler: requireStaff }, async (requ
   if (!('contract' in result)) return reply.code(409).send({ code: 'contract_missing_data', error: 'Faltan datos: ' + result.missing.join(', '), missing: result.missing });
   return reply.code(201).send({ ...contractResponse(result.contract!), missing: result.missing });
 });
+// Quita de R2 (o del almacén de pruebas) un objeto de contrato; un fallo al borrar el objeto no debe deshacer el borrado ya hecho en la base.
+async function quitarObjetoContrato(objectKey?: string | null) {
+  if (!objectKey) return;
+  try { if (storageReady) await deleteObject(objectKey); else testSignatureObjects.delete(objectKey); }
+  catch (error) { app.log.warn({ err: error, objectKey }, 'No se pudo borrar un objeto de contrato'); }
+}
+
+// EDITAR un contrato que aún no está firmado (borrador o enviado): se recalculan texto, PDF y términos con lo nuevo. Un contrato ENVIADO vuelve a borrador
+// (hay que enviarlo otra vez): así la clienta nunca firma un texto distinto del que leyó. Los firmados no se editan: se genera otro contrato.
+app.patch('/api/contracts/:id', { preHandler: requireStaff }, async (request, reply) => {
+  const auth = request.user as AuthUser; const id = z.string().uuid().parse((request.params as { id: string }).id);
+  const input = contractDraftSchema.parse(request.body || {});
+  const [owned] = await sql`SELECT client_id FROM client_contracts WHERE id = ${id} AND owner_id = ${auth.sub}`;
+  if (!owned) return reply.code(404).send({ error: 'Contrato no encontrado' });
+  const result = await sql.begin(async transaction => {
+    await lockBillingClient(transaction, owned.client_id);
+    const [current] = await transaction`SELECT * FROM client_contracts WHERE id = ${id} AND owner_id = ${auth.sub} FOR UPDATE`;
+    if (!current) return null;
+    if (current.signed_at || !['borrador', 'enviado'].includes(current.status)) return { conflict: 'Un contrato firmado no se edita: genera uno nuevo (si era de prueba, puedes borrarlo).' };
+    const material = await materialContrato(transaction, auth.sub, current.client_id, input);
+    if (!material) return null;
+    if (input.send && material.missing.length) return { missing: material.missing };
+    const status = input.send ? 'enviado' : 'borrador';
+    const owner = await currentOwnerSignature(transaction, auth.sub);
+    const pdf = await contractPdfWithSignatures({ title: 'Contrato de servicios', subtitle: material.row.full_name + ' · ' + status, body: material.bodyText,
+      values: material.values, ownerSignatureKey: owner.key });
+    const document = await guardarPdfContrato(transaction, id, auth.sub, current.client_id, pdf);
+    const [updated] = await transaction`UPDATE client_contracts SET template_key = ${material.key}, template_version = ${material.version}, status = ${status},
+      values = ${transaction.json(material.values)}, body_text = ${material.bodyText}, sent_at = ${input.send ? transaction`now()` : null},
+      pdf_document_id = ${document.id}, owner_signature_key = ${owner.key}, is_test = ${input.isTest === undefined ? current.is_test : input.isTest}
+      WHERE id = ${id} RETURNING *`;
+    const [old] = current.pdf_document_id ? await transaction`DELETE FROM documents WHERE id = ${current.pdf_document_id} RETURNING object_key` : [];
+    return { contract: updated, missing: material.missing, oldKey: old?.object_key as string | undefined };
+  });
+  if (!result) return reply.code(404).send({ error: 'Contrato no encontrado' });
+  if ('conflict' in result) return reply.code(409).send({ error: result.conflict });
+  if (!('contract' in result)) return reply.code(409).send({ code: 'contract_missing_data', error: 'Faltan datos: ' + result.missing.join(', '), missing: result.missing });
+  await quitarObjetoContrato(result.oldKey);
+  return { ...contractResponse(result.contract!), missing: result.missing };
+});
+
+// BORRAR: un contrato sin firmar se borra siempre; uno firmado SOLO si fue marcado "de prueba" al generarlo. Un contrato real firmado es evidencia y no se borra.
+app.delete('/api/contracts/:id', { preHandler: requireStaff }, async (request, reply) => {
+  const auth = request.user as AuthUser; const id = z.string().uuid().parse((request.params as { id: string }).id);
+  const [owned] = await sql`SELECT client_id FROM client_contracts WHERE id = ${id} AND owner_id = ${auth.sub}`;
+  if (!owned) return reply.code(404).send({ error: 'Contrato no encontrado' });
+  const result = await sql.begin(async transaction => {
+    await lockBillingClient(transaction, owned.client_id);
+    const [contract] = await transaction`SELECT * FROM client_contracts WHERE id = ${id} AND owner_id = ${auth.sub} FOR UPDATE`;
+    if (!contract) return null;
+    if (contract.signed_at && !contract.is_test) return { conflict: 'Un contrato firmado es evidencia y no se borra. Genera uno nuevo; el anterior queda como reemplazado.' };
+    const documents = await transaction`SELECT id, object_key FROM documents WHERE client_id = ${contract.client_id} AND kind = 'contract'
+      AND (id = ${contract.pdf_document_id ?? null}::uuid OR object_key LIKE ${'contracts/' + contract.owner_id + '/' + contract.client_id + '/' + id + '/%'})`;
+    await transaction`DELETE FROM client_contracts WHERE id = ${id}`;
+    if (documents.length) await transaction`DELETE FROM documents WHERE id IN ${transaction(documents.map(document => document.id as string))}`;
+    return { keys: [...documents.map(document => document.object_key as string), contract.client_signature_key as string | null, contract.client_signature_strokes_key as string | null] };
+  });
+  if (!result) return reply.code(404).send({ error: 'Contrato no encontrado' });
+  if ('conflict' in result) return reply.code(409).send({ error: result.conflict });
+  for (const key of result.keys) await quitarObjetoContrato(key);
+  return { deleted: true };
+});
+
 app.post('/api/contracts/:id/send', { preHandler: requireStaff }, async (request, reply) => {
   const auth = request.user as AuthUser; const id = z.string().uuid().parse((request.params as { id: string }).id);
   const result = await sql.begin(async transaction => {
@@ -3021,11 +3085,13 @@ app.delete('/api/clients/:id', { preHandler: requireStaff }, async (request, rep
     await lockBillingClient(transaction, id);
     const [client] = await transaction`SELECT id, full_name FROM clients WHERE id = ${id} AND owner_id = ${auth.sub} FOR UPDATE`;
     if (!client) return reply.code(404).send({ error: 'Cliente no encontrado' });
-    const [signed] = await transaction`SELECT id FROM client_contracts WHERE client_id = ${id} AND signed_at IS NOT NULL LIMIT 1`;
+    const [signed] = await transaction`SELECT id FROM client_contracts WHERE client_id = ${id} AND signed_at IS NOT NULL AND NOT is_test LIMIT 1`;
+    const testKeys = await transaction`SELECT client_signature_key AS a, client_signature_strokes_key AS b FROM client_contracts WHERE client_id = ${id} AND is_test`;
     if (signed) return reply.code(409).send({ error: 'Este expediente conserva contratos firmados. Desactiva al cliente en lugar de borrar su evidencia.' });
     const documents = await transaction`SELECT object_key FROM documents WHERE client_id = ${id}`;
     if (storageReady) for (const document of documents) await deleteObject(document.object_key);
     await transaction`DELETE FROM clients WHERE id = ${id}`;
+    for (const row of testKeys) { await quitarObjetoContrato(row.a as string | null); await quitarObjetoContrato(row.b as string | null); }
     return { deleted: true, client };
   });
 });

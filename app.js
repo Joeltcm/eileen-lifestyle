@@ -1,4 +1,4 @@
-const APP_VERSION = '306';
+const APP_VERSION = '307';
 const markPwaVersion = () => document.querySelectorAll('.topbar-actions').forEach(actions => {
   if (actions.querySelector('[data-pwa-version]')) return;
   const indicator = document.createElement('span');
@@ -5147,11 +5147,18 @@ async function clientContractsSection(target, client) {
     const contracts = await api(`/api/clients/${client.id}/contracts`);
     if (!target.isConnected) return;
     const label = value => ({ borrador: 'Borrador', enviado: 'Pendiente de firma', firmado: 'Firmado', reemplazado: 'Reemplazado', anulado: 'Anulado' }[value] || value);
-    target.innerHTML = `${contracts.length ? contracts.map(contract => `<div class="viaje-fila"><div><b>${label(contract.status)} · ${contract.template_key}</b><small>${contract.signed_at ? `Firmado ${fechaCorta(contract.signed_at)}${contract.signature_method ? ` · ${contract.signature_method === 'presencial' ? 'presencial' : contract.signature_method}` : ''}` : contract.sent_at ? `Enviado ${fechaCorta(contract.sent_at)}` : 'Sin enviar'}${contract.signed_name ? ` · ${escapeHtml(contract.signed_name)}` : ''}</small></div><div class="viaje-acciones"><button type="button" class="secondary" data-contract-download="${contract.id}">Descargar PDF</button>${contract.status === 'borrador' ? `<button type="button" class="primary" data-contract-send="${contract.id}">Enviar al portal</button>` : ''}${contract.status === 'enviado' ? `<button type="button" class="primary contract-in-person" data-contract-in-person="${contract.id}">Firmar en este dispositivo</button>` : ''}${['borrador', 'enviado'].includes(contract.status) ? `<button type="button" class="secondary" data-contract-paper="${contract.id}">Firmado en papel</button>` : ''}</div></div>`).join('') : '<p class="empty">Sin contrato.</p>'}<button type="button" class="primary wide-button" id="generate-client-contract">Generar contrato</button><button type="button" class="secondary wide-button" id="contract-whatsapp">Enviar por WhatsApp</button>`;
+    target.innerHTML = `${contracts.length ? contracts.map(contract => `<div class="viaje-fila"><div><b>${label(contract.status)} · ${contract.template_key}${contract.is_test ? ' · <span class="status estado-demo">PRUEBA</span>' : ''}</b><small>${contract.signed_at ? `Firmado ${fechaCorta(contract.signed_at)}${contract.signature_method ? ` · ${contract.signature_method === 'presencial' ? 'presencial' : contract.signature_method}` : ''}` : contract.sent_at ? `Enviado ${fechaCorta(contract.sent_at)}` : 'Sin enviar'}${contract.signed_name ? ` · ${escapeHtml(contract.signed_name)}` : ''}</small></div><div class="viaje-acciones"><button type="button" class="secondary" data-contract-download="${contract.id}">Descargar PDF</button>${contract.status === 'borrador' ? `<button type="button" class="primary" data-contract-send="${contract.id}">Enviar al portal</button>` : ''}${contract.status === 'enviado' ? `<button type="button" class="primary contract-in-person" data-contract-in-person="${contract.id}">Firmar en este dispositivo</button>` : ''}${['borrador', 'enviado'].includes(contract.status) ? `<button type="button" class="secondary" data-contract-paper="${contract.id}">Firmado en papel</button><button type="button" class="secondary" data-contract-edit="${contract.id}">Editar</button>` : ''}${!contract.signed_at || contract.is_test ? `<button type="button" class="secondary danger" data-contract-delete="${contract.id}">Eliminar${contract.signed_at ? ' (prueba)' : ''}</button>` : ''}</div></div>`).join('') : '<p class="empty">Sin contrato.</p>'}<button type="button" class="primary wide-button" id="generate-client-contract">Generar contrato</button><button type="button" class="secondary wide-button" id="contract-whatsapp">Enviar por WhatsApp</button>`;
     target.querySelector('#generate-client-contract').onclick = () => contractEditor(client);
     target.querySelectorAll('[data-contract-download]').forEach(button => { button.onclick = () => downloadContract(button.dataset.contractDownload).catch(error => toast(error.message, true)); });
     target.querySelectorAll('[data-contract-send]').forEach(button => { button.onclick = async () => { try { await api(`/api/contracts/${button.dataset.contractSend}/send`, { method: 'POST', body: {} }); await loadData(); renderAll(); await clientContractsSection(target, client); toast('Contrato enviado al portal'); } catch (error) { toast(error.message, true); } }; });
     target.querySelectorAll('[data-contract-paper]').forEach(button => { button.onclick = () => paperContractDialog(client, button.dataset.contractPaper); });
+    target.querySelectorAll('[data-contract-edit]').forEach(button => { button.onclick = () => contractEditor(client, contracts.find(item => item.id === button.dataset.contractEdit)); });
+    target.querySelectorAll('[data-contract-delete]').forEach(button => { button.onclick = async () => {
+      const contract = contracts.find(item => item.id === button.dataset.contractDelete);
+      const aviso = contract.signed_at ? 'Este contrato de PRUEBA ya está firmado. Se borrará con su PDF y sus firmas. ¿Eliminarlo?' : 'Se borrará este contrato y su PDF. ¿Eliminarlo?';
+      if (!window.confirm(aviso)) return;
+      try { await api(`/api/contracts/${contract.id}`, { method: 'DELETE' }); await loadData(); renderAll(); await clientContractsSection(target, client); toast('Contrato eliminado'); } catch (error) { toast(error.message, true); }
+    }; });
     target.querySelectorAll('[data-contract-in-person]').forEach(button => { button.onclick = () => inPersonContractDialog(client, button.dataset.contractInPerson); });
     target.querySelector('#contract-whatsapp').onclick = () => {
       // Solo el enlace genérico al portal: sin nombre, cédula ni token en la URL.
@@ -5192,7 +5199,7 @@ function paperContractDialog(client, contractId) {
     } catch (error) { toast(error.message, true); } finally { form.classList.remove('loading-state'); }
   };
 }
-function contractEditor(client) {
+function contractEditor(client, existing = null) {
   const box = document.createElement('div');
   if (client.serviceMode === 'demo') {
     box.innerHTML = `<p class="eyebrow">CONTRATO</p><h2>Primero convierte la demo en cliente</h2><p class="section-note">Los contratos informativos corresponden a servicios de pago. El período demo y sus rutinas actuales no se modifican hasta que confirmes la conversión.</p><button type="button" class="primary wide-button" id="contract-convert-demo">Convertir en cliente</button>`;
@@ -5202,13 +5209,18 @@ function contractEditor(client) {
   const numberOrNull = value => value === '' || value == null ? null : Number(value);
   const optionLabel = option => `${option.templateKey === 'rutinas' ? 'Rutinas' : option.templateKey === 'paquete' ? 'Paquete' : 'Mensualidad'} · ${escapeHtml(option.name)} · ${option.quantity} ${option.unitLabel}${option.quantity === 1 ? '' : 's'} · ${money.format(option.price)} → ${money.format(option.price / option.quantity)} por ${option.unitLabel}`;
   const showError = error => { box.innerHTML = `<p class="empty">${escapeHtml(error.message)}</p>`; };
-  api(`/api/clients/${client.id}/contracts/preview`, { method: 'POST', body: {} }).then(initial => {
+  // Editar: se parte de los términos ya guardados en el contrato (no de los del expediente) y se guarda sobre el mismo contrato.
+  const values = existing?.values || {};
+  const existingBody = existing ? { templateKey: existing.template_key, quantity: values.QUANTITY ?? values.SESSIONS ?? values.ROUTINES_PER_MONTH ?? null, price: values.PRICE_AMOUNT ?? null,
+    creditClassPrice: values.CREDIT_CLASS_PRICE_AMOUNT ?? null, cutoffDay: Number(values.CUTOFF_DAY) || null, startsOn: values.STARTS_ON || null, commitmentMonths: Number(values.COMMITMENT_MONTHS) || 0,
+    rescheduleFrom: values.RESCHEDULE_FROM || null, rescheduleTo: values.RESCHEDULE_TO || null, planName: values.PLAN_NAME || null } : {};
+  api(`/api/clients/${client.id}/contracts/preview`, { method: 'POST', body: existingBody }).then(initial => {
     if (!box.isConnected) return;
     const terms = initial.terms || initial.defaults;
     const options = (initial.options || []).slice(0, 3);
     // El contrato sale según el TIPO DE CLIENTE del expediente: a crédito -> contrato de crédito; anticipado -> mensualidad, paquete o rutinas.
     const isCredit = (terms.templateKey || initial.templateKey) === 'credito' || terms.paymentMode === 'no_anticipado';
-    box.innerHTML = `<form id="contract-editor"><p class="eyebrow">CONTRATO INFORMATIVO · BORRADOR PARA REVISIÓN LEGAL</p><h2>Generar contrato</h2>
+    box.innerHTML = `<form id="contract-editor"><p class="eyebrow">CONTRATO INFORMATIVO · BORRADOR PARA REVISIÓN LEGAL</p><h2>${existing ? 'Editar contrato' : 'Generar contrato'}</h2>${existing ? `<p class="section-note">Al guardar se actualizan el texto y el PDF con los montos y clases nuevos.${existing.status === 'enviado' ? ' Como ya estaba enviado, vuelve a borrador: tendrás que enviarlo de nuevo para que lo firme.' : ''}</p>` : ''}
       <p class="section-note">Estos términos quedan únicamente en el contrato. No cambian el expediente, el plan de facturación, las facturas ni los saldos.</p>
       <div id="contract-missing"></div><div id="contract-warning"></div>
       ${isCredit ? '<p class="contract-type"><b>Contrato de cliente a crédito</b> · según su expediente (paga cada clase al cierre del mes).</p><input name="templateKey" type="hidden" value="credito" />' : '<p class="contract-type"><b>Cliente de pago anticipado</b> · según su expediente.</p><label>Modelo<select name="templateKey"><option value="mensualidad">Mensualidad anticipada (sugerida)</option><option value="paquete">Paquete</option><option value="rutinas">Rutinas personalizadas</option></select></label>'}
@@ -5219,6 +5231,7 @@ function contractEditor(client) {
       <label>Meses de compromiso<input name="commitmentMonths" type="number" min="0" max="60" value="${terms.commitmentMonths || 0}" /><small>0 = mes a mes</small></label>
       <fieldset class="contract-reschedule"><legend>Ventana de reprogramación · lunes a viernes</legend><div class="form-row"><label>Desde<input name="rescheduleFrom" type="time" value="${escapeHtml(terms.rescheduleFrom || '')}" required /></label><label>Hasta<input name="rescheduleTo" type="time" max="17:00" value="${escapeHtml(terms.rescheduleTo || '')}" required /></label></div><small>La hora final no puede pasar de las 17:00. Si Eileen cambia su disponibilidad, avisará con 24 horas de anticipación.</small></fieldset>
       ${options.length ? `<section class="contract-options"><p class="eyebrow">OPCIONES DE REFERENCIA</p>${options.map((option, index) => `<article><div><b>${index === 0 && option.templateKey === 'mensualidad' ? 'Sugerida · ' : ''}${optionLabel(option)}</b></div><button type="button" class="secondary" data-contract-option="${index}">Usar este plan</button></article>`).join('')}</section>` : ''}
+      <label class="checkbox-line"><input name="isTest" type="checkbox" ${existing?.is_test ? 'checked' : ''} ${existing?.signed_at ? 'disabled' : ''} /> Contrato de prueba (se podrá eliminar aunque se firme)</label>
       <label class="checkbox-line"><input name="send" type="checkbox" /> Enviar al portal al guardar</label>
       <button type="button" class="secondary wide-button" id="preview-contract">Actualizar vista previa</button><button class="primary wide-button" id="save-contract">Guardar contrato</button><div id="contract-preview"></div></form>`;
     const form = box.querySelector('form'); const preview = box.querySelector('#contract-preview');
@@ -5226,7 +5239,7 @@ function contractEditor(client) {
     const payload = send => ({ templateKey: form.elements.templateKey.value, quantity: numberOrNull(form.elements.quantity.value), price: numberOrNull(form.elements.price.value), paymentMode: form.elements.paymentMode.value,
       creditClassPrice: numberOrNull(form.elements.creditClassPrice.value), cutoffDay: numberOrNull(form.elements.cutoffDay.value), startsOn: form.elements.startsOn.value || null,
       commitmentMonths: Number(form.elements.commitmentMonths.value || 0), rescheduleFrom: form.elements.rescheduleFrom.value || null,
-      rescheduleTo: form.elements.rescheduleTo.value || null, planName: form.elements.planName.value || 'Acuerdo personalizado', send });
+      rescheduleTo: form.elements.rescheduleTo.value || null, planName: form.elements.planName.value || 'Acuerdo personalizado', isTest: form.elements.isTest.checked, send });
     const syncFields = () => {
       const key = form.elements.templateKey.value;
       box.querySelector('#contract-quantity-label').textContent = key === 'credito' ? 'Clases por mes acordadas' : key === 'rutinas' ? 'Rutinas al mes' : key === 'paquete' ? 'Sesiones del paquete' : 'Sesiones al mes';
@@ -5251,8 +5264,8 @@ function contractEditor(client) {
       try {
         form.classList.add('loading-state'); const checked = await refreshPreview();
         if (sending && !checked.canSend) throw new Error('Completa los datos indicados antes de enviar el contrato al portal');
-        await api(`/api/clients/${client.id}/contracts`, { method: 'POST', body: payload(sending) });
-        await loadData(); renderAll(); clientDetail(client.id); toast(sending ? 'Contrato enviado al portal' : 'Contrato guardado como borrador');
+        await api(existing ? `/api/contracts/${existing.id}` : `/api/clients/${client.id}/contracts`, { method: existing ? 'PATCH' : 'POST', body: payload(sending) });
+        await loadData(); renderAll(); clientDetail(client.id); toast(existing ? (sending ? 'Contrato actualizado y enviado al portal' : 'Contrato actualizado') : sending ? 'Contrato enviado al portal' : 'Contrato guardado como borrador');
       } catch (error) { toast(error.message, true); } finally { form.classList.remove('loading-state'); }
     };
   }).catch(showError);
