@@ -22,7 +22,7 @@ import { resolveBillingEngine } from './billing-engine.js';
 import { planBillingGeneration, runBillingGeneration, shiftCutAfterPause } from './billing-generator.js';
 import { DEFAULT_IMPORT_MANIFEST, applyBatch, approveBatch, createPreviewBatch, getBatch, listBatches, reverseBatch, type ImportManifest } from './billing-import.js';
 import { exercisesHash, sameExerciseSet, routineSummaryText, type RoutineExerciseForSummary } from './routine-utils.js';
-import { CANCELLATION_NOTICE_HOURS, CONTRACT_TERMINATION_NOTICE_DAYS, RESCHEDULE_CHANGE_NOTICE_HOURS, RESCHEDULE_LATEST_END, contractTimestamp, contractTemplateVersion, normalizeContractName, renderContractTemplate, type ContractTemplateKey } from './contracts.js';
+import { HOLIDAY_CLASS_RULE, CANCELLATION_NOTICE_HOURS, CONTRACT_TERMINATION_NOTICE_DAYS, RESCHEDULE_CHANGE_NOTICE_HOURS, RESCHEDULE_LATEST_END, contractTimestamp, contractTemplateVersion, normalizeContractName, renderContractTemplate, type ContractTemplateKey } from './contracts.js';
 
 type AuthUser = { sub: string; role: 'admin' | 'trainer' | 'client'; email: string };
 const app = Fastify({ logger: true, trustProxy: true });
@@ -2576,10 +2576,13 @@ async function materialContrato(db: any, ownerId: string, clientId: string, inpu
     START_DATE: dmy(startsOn), STARTS_ON: startsOn, COMMITMENT_MONTHS: input.commitmentMonths,
     RESCHEDULE_FROM: rescheduleFrom || '[pendiente: hora inicial]', RESCHEDULE_TO: rescheduleTo || '[pendiente: hora final]',
     CANCELLATION_NOTICE_HOURS, RESCHEDULE_CHANGE_NOTICE_HOURS,
-    HOLIDAY_RULE: '[pendiente de definición por Eileen: indicar si la clase del feriado se descuenta o no del plan]',
+    // Sin decisión de Eileen la cláusula de feriados NO menciona descuento (nunca un texto "[pendiente…]" dentro de un contrato que se firma).
+    HOLIDAY_RULE: HOLIDAY_CLASS_RULE ?? '',
     PACKAGE_VALIDITY_DAYS: DIAS_USO_PAQUETE,
     PACKAGE_RENEWAL_DAYS: DIAS_RENOVACION_PAQUETE, TERMINATION_NOTICE_DAYS: CONTRACT_TERMINATION_NOTICE_DAYS, ACCEPTANCE_BLOCK: ''
   };
+  // Va al final: los avisos del cobro (precio, modalidad, pagador) son los que Eileen debe ver primero.
+  if (key !== 'rutinas' && !HOLIDAY_CLASS_RULE) warnings.push('Falta que Eileen decida si la clase de un feriado se descuenta del plan; mientras tanto el contrato no lo menciona.');
   const terms = { templateKey: key, quantity: quantity || null, price: price || null, paymentMode,
     creditClassPrice: creditClassPrice || null, cutoffDay: cutoffDay || null, startsOn, commitmentMonths: input.commitmentMonths,
     rescheduleFrom, rescheduleTo, planName };

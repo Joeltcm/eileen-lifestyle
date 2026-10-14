@@ -3436,7 +3436,11 @@ describe('reparar ciclos mensuales degenerados', () => {
     // cliente a clase suelta, como hará la entrenadora.
     const single = await api.post('/api/plans', { name: 'Suelta reparación', billingModel: 'single', price: 25 });
     const c = await api.post('/api/clients', { fullName: 'Suelto con saldo viejo', billingModel: 'monthly', standardPrice: 100, cutoffDay: 1 });
-    const referencia = desplazarDiasPa(hoyPa(), -20);
+    // Fecha ANCLADA al ciclo, no relativa a hoy: el saldo nace el 1.º del mes anterior (corte 1) y se le pone vencimiento el día 6 de ese mes,
+    // para que sea "degenerado" (vence < 20 días después de abrir) cualquier día del mes. Con "hoy − 20" la prueba fallaba del ~día 11 a fin de mes.
+    const [anio, mes] = hoyPa().split('-').map(Number);
+    const mesAnterior = mes === 1 ? `${anio - 1}-12` : `${anio}-${String(mes - 1).padStart(2, '0')}`;
+    const referencia = `${mesAnterior}-06`;
     const p = await api.post('/api/packages', { clientId: c.datos.id, totalSessions: 4, amount: 100, kind: 'monthly', dueOn: referencia });
     await api.patch(`/api/packages/${p.datos.id}`, { expiresOn: referencia });
     await api.patch(`/api/clients/${c.datos.id}/plan`, { planId: single.datos.id, cutoffDay: 1 });

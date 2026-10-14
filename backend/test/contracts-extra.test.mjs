@@ -41,3 +41,11 @@ test('un escaneo en papel subido a mano sigue apareciendo en los documentos', as
   const docs = ok(await api.get(`/api/documents?clientId=${s.client.id}`), 200);
   assert.ok(docs.some(d => d.id === doc.id));
 });
+
+test('mientras Eileen no decida la regla de feriados, el contrato NO lleva un texto "[pendiente…]" (se firma limpio) y Eileen ve el aviso', async () => {
+  const s = await escenario();
+  const preview = ok(await api.post(`/api/clients/${s.client.id}/contracts/preview`, { templateKey: 'mensualidad', quantity: 8, price: 200, rescheduleFrom: '08:00', rescheduleTo: '12:00' }), 200);
+  assert.doesNotMatch(preview.bodyText, /\[pendiente|\{\{/i, 'ningún marcador ni texto pendiente en el cuerpo');
+  assert.match(preview.bodyText, /feriados nacionales de Panamá no hay clases/i);
+  assert.ok((preview.warnings || []).some(w => /feriado/i.test(w)), `aviso no bloqueante a Eileen: ${JSON.stringify(preview.warnings)}`);
+});

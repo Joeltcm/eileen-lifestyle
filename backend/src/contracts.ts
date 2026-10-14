@@ -43,3 +43,7 @@ export function contractTimestamp(date = new Date()) {
   const value = (type: string) => parts.find(part => part.type === type)?.value || '';
   return `${value('day')}-${value('month')}-${value('year')} ${value('hour')}:${value('minute')}`;
 }
+
+// Regla económica de la clase que cae en feriado (Eileen). null = sin decidir: mensualidad y paquete no se pueden ENVIAR hasta definirla.
+// Cuando Eileen decida, poner aquí la frase exacta que irá en la cláusula de feriados.
+export const HOLIDAY_CLASS_RULE: string | null = null;
