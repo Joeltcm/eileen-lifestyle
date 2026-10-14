@@ -10,6 +10,7 @@ before(async () => {
   server = await levantar(); api = cliente(server.base); db = postgres(server.databaseUrl, { onnotice: () => {}, max: 1 });
   const setup = await api.post('/api/auth/setup', CREDENCIALES, { 'x-setup-token': SETUP_TOKEN }); api.usarToken(setup.datos.token);
   await api.patch('/api/account-settings', { legalName: 'Entrenadora Ficticia', legalId: 'ID-FICTICIO-01', contractCity: 'Ciudad de Prueba' });
+  await api.put('/api/working-hours', { tramos: [1, 2, 3, 4, 5].map(weekday => ({ weekday, startsAt: '07:00', endsAt: '17:00' })) });
 }, { timeout: 90000 });
 after(async () => { await db?.end({ timeout: 1 }); await server?.parar(); });
 const ok = (r, s = 201) => { assert.equal(r.estado, s, JSON.stringify(r.datos)); return r.datos; };

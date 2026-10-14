@@ -4,6 +4,9 @@ import { fileURLToPath } from 'node:url';
 export const contractTemplateKeys = ['mensualidad', 'paquete', 'rutinas'] as const;
 export type ContractTemplateKey = typeof contractTemplateKeys[number];
 export const CONTRACT_TERMINATION_NOTICE_DAYS = 5;
+export const CANCELLATION_NOTICE_HOURS = 24;
+export const RESCHEDULE_CHANGE_NOTICE_HOURS = 24;
+export const RESCHEDULE_LATEST_END = '17:00';
 
 const templateNames: Record<ContractTemplateKey, string> = {
   mensualidad: 'mensualidad.txt', paquete: 'paquete.txt', rutinas: 'rutinas.txt'

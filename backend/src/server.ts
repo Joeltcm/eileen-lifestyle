@@ -22,7 +22,7 @@ import { resolveBillingEngine } from './billing-engine.js';
 import { planBillingGeneration, runBillingGeneration, shiftCutAfterPause } from './billing-generator.js';
 import { DEFAULT_IMPORT_MANIFEST, applyBatch, approveBatch, createPreviewBatch, getBatch, listBatches, reverseBatch, type ImportManifest } from './billing-import.js';
 import { exercisesHash, sameExerciseSet, routineSummaryText, type RoutineExerciseForSummary } from './routine-utils.js';
-import { CONTRACT_TERMINATION_NOTICE_DAYS, contractTimestamp, contractTemplateVersion, normalizeContractName, renderContractTemplate, type ContractTemplateKey } from './contracts.js';
+import { CANCELLATION_NOTICE_HOURS, CONTRACT_TERMINATION_NOTICE_DAYS, RESCHEDULE_CHANGE_NOTICE_HOURS, RESCHEDULE_LATEST_END, contractTimestamp, contractTemplateVersion, normalizeContractName, renderContractTemplate, type ContractTemplateKey } from './contracts.js';
 
 type AuthUser = { sub: string; role: 'admin' | 'trainer' | 'client'; email: string };
 const app = Fastify({ logger: true, trustProxy: true });
@@ -2432,11 +2432,30 @@ app.patch('/api/account-settings', { preHandler: requireStaff }, async request =
 });
 
 // ── Contratos internos generados desde el expediente ─────────────────────
+const optionalContractNumber = (schema: z.ZodType<number>) => z.preprocess(value => value === '' || value === null ? null : value,
+  z.union([schema, z.null()]).optional());
+const optionalContractTime = z.preprocess(value => value === '' || value === null ? null : value,
+  z.union([z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/, 'Usa una hora válida en formato HH:mm'), z.null()]).optional());
 const contractDraftSchema = z.object({
   templateKey: z.enum(['mensualidad', 'paquete', 'rutinas']).optional(),
-  startsOn: z.string().date().optional(),
+  quantity: optionalContractNumber(z.coerce.number().int().positive().max(366)),
+  price: optionalContractNumber(z.coerce.number().positive().max(100000)),
+  paymentMode: z.union([z.enum(['anticipado', 'no_anticipado']), z.null()]).optional(),
+  creditClassPrice: optionalContractNumber(z.coerce.number().positive().max(100000)),
+  cutoffDay: optionalContractNumber(z.coerce.number().int().min(1).max(31)),
+  startsOn: z.union([z.string().date(), z.null()]).optional(),
   commitmentMonths: z.coerce.number().int().min(0).max(60).default(0),
+  rescheduleFrom: optionalContractTime,
+  rescheduleTo: optionalContractTime,
+  planName: z.union([z.string().trim().max(160), z.null()]).optional(),
   send: z.boolean().default(false)
+}).superRefine((input, context) => {
+  if (input.rescheduleTo && input.rescheduleTo > RESCHEDULE_LATEST_END) context.addIssue({
+    code: 'custom', path: ['rescheduleTo'], message: `La hora final de reprogramación no puede pasar de ${RESCHEDULE_LATEST_END}`
+  });
+  if (input.rescheduleFrom && input.rescheduleTo && input.rescheduleFrom >= input.rescheduleTo) context.addIssue({
+    code: 'custom', path: ['rescheduleTo'], message: 'La hora final debe ser posterior a la hora de inicio'
+  });
 });
 
 function edadEnFecha(nacimiento: string | null, hoy: string) {
@@ -2445,28 +2464,101 @@ function edadEnFecha(nacimiento: string | null, hoy: string) {
   return Number(hoy.slice(0, 4)) - Number(born.slice(0, 4)) - (hoy.slice(5) < born.slice(5) ? 1 : 0);
 }
 
+type ContractOption = { templateKey: ContractTemplateKey; name: string; quantity: number; price: number; paymentMode: 'anticipado'; creditClassPrice: number | null; cutoffDay: number; planName: string; unitLabel: string };
+
+function contractOption(plan: Record<string, any>, cutoffDay: number): ContractOption | null {
+  const templateKey: ContractTemplateKey = plan.service_type === 'rutinas' ? 'rutinas' : plan.billing_model === 'package' ? 'paquete' : 'mensualidad';
+  const quantity = Number(plan.service_type === 'rutinas' ? plan.routines_per_month : plan.sessions_included);
+  const price = Number(plan.price);
+  if (!quantity || !price || plan.billing_model === 'single') return null;
+  return { templateKey, name: String(plan.name), quantity, price, paymentMode: 'anticipado', creditClassPrice: null,
+    cutoffDay, planName: String(plan.name), unitLabel: plan.service_type === 'rutinas' ? 'rutina' : 'clase' };
+}
+
+async function contextoContratoInformativo(db: any, ownerId: string, row: Record<string, any>) {
+  const today = fechaDeNegocioPanama();
+  const concepts = await db`
+    SELECT bs.kind, bs.sessions_reference, bs.price, bs.payer_client_id, payer.full_name AS payer_name
+    FROM billing_subscriptions bs JOIN clients payer ON payer.id = bs.payer_client_id
+    WHERE bs.owner_id = ${ownerId} AND bs.beneficiary_client_id = ${row.id}
+      AND bs.starts_on <= ${today}::date AND (bs.ends_on IS NULL OR bs.ends_on >= ${today}::date)
+    ORDER BY (bs.payer_client_id = ${row.id}) DESC, bs.starts_on DESC, bs.created_at DESC` as unknown as Record<string, any>[];
+  const selfConcept = concepts.find(concept => concept.payer_client_id === row.id) || null;
+  const billingConcept = selfConcept || concepts[0] || null;
+  const plans = await db`SELECT id, name, billing_model, price, sessions_included, service_type, routines_per_month
+    FROM service_plans WHERE owner_id = ${ownerId} AND active = true` as unknown as Record<string, any>[];
+  const allOptions = plans.map(plan => contractOption(plan, Number(row.billing_cutoff_day || 1))).filter(Boolean) as ContractOption[];
+  const best = (key: ContractTemplateKey) => allOptions.filter(option => option.templateKey === key)
+    .sort((a, b) => a.price / a.quantity - b.price / b.quantity || a.price - b.price || a.name.localeCompare(b.name, 'es'))[0];
+  const options = [best('mensualidad'), best('paquete'), best('rutinas')].filter(Boolean) as ContractOption[];
+  const [hours] = await db`SELECT to_char(min(starts_at), 'HH24:MI') AS starts_at,
+      to_char(LEAST(max(ends_at), ${RESCHEDULE_LATEST_END}::time), 'HH24:MI') AS ends_at
+    FROM working_hours WHERE owner_id = ${ownerId} AND weekday BETWEEN 1 AND 5 AND starts_at < ${RESCHEDULE_LATEST_END}::time`;
+  const rescheduleFrom = hours?.starts_at && hours?.ends_at && hours.starts_at < hours.ends_at ? String(hours.starts_at) : null;
+  const rescheduleTo = rescheduleFrom ? String(hours.ends_at) : null;
+  const assignedQuantity = Number(row.service_type === 'rutinas' ? row.routines_per_month : row.billing_model === 'package' ? row.sessions_included : row.monthly_session_target ?? row.sessions_included) || null;
+  const assignedPrice = Number(row.standard_price || row.plan_catalog_price || 0) || null;
+  const fallbackOption = options[0] || null;
+  const kind = selfConcept?.kind as string | undefined;
+  const templateKey: ContractTemplateKey = kind === 'package' ? 'paquete' : kind === 'monthly' || kind === 'credit' ? 'mensualidad'
+    : row.service_type === 'rutinas' ? 'rutinas' : row.billing_model === 'package' ? 'paquete' : fallbackOption?.templateKey || 'mensualidad';
+  const quantity = Number(selfConcept?.sessions_reference || 0) || assignedQuantity || fallbackOption?.quantity || null;
+  const conceptPrice = Number(selfConcept?.price || 0) || null;
+  const price = conceptPrice || assignedPrice || fallbackOption?.price || null;
+  const paymentMode: 'anticipado' | 'no_anticipado' = kind === 'credit' || (!selfConcept && row.payment_mode === 'no_anticipado') ? 'no_anticipado' : 'anticipado';
+  return {
+    defaults: {
+      templateKey, quantity, price, paymentMode,
+      creditClassPrice: paymentMode === 'no_anticipado' ? conceptPrice || Number(row.credit_session_price || 25) : Number(row.credit_session_price || 25),
+      cutoffDay: Number(row.billing_cutoff_day || 1), startsOn: today, commitmentMonths: 0,
+      rescheduleFrom, rescheduleTo, planName: (selfConcept ? 'Concepto vigente' : row.plan_name || fallbackOption?.planName) || 'Acuerdo personalizado'
+    },
+    options,
+    billingConcept
+  };
+}
+
+function explicitOrDefault<T>(value: T | null | undefined, fallback: T | null): T | null {
+  return value === undefined ? fallback : value;
+}
+
 async function materialContrato(db: any, ownerId: string, clientId: string, input: z.infer<typeof contractDraftSchema>) {
-  const [row] = await db`SELECT c.*, p.name AS plan_name, p.sessions_included, p.service_type, p.routines_per_month,
+  const [row] = await db`SELECT c.*, p.name AS plan_name, p.price AS plan_catalog_price, p.sessions_included, p.service_type, p.routines_per_month,
       s.legal_name, s.legal_id, s.legal_address, s.contract_city
     FROM clients c LEFT JOIN service_plans p ON p.id = c.plan_id LEFT JOIN account_settings s ON s.owner_id = c.owner_id
     WHERE c.id = ${clientId} AND c.owner_id = ${ownerId}`;
   if (!row) return null;
   if (row.service_mode === 'demo') sessionStateConflict('Convierte la demo en cliente antes de generar su contrato de pago.');
-  const key: ContractTemplateKey = input.templateKey || (row.service_type === 'rutinas' ? 'rutinas' : row.billing_model === 'package' ? 'paquete' : 'mensualidad');
+  const context = await contextoContratoInformativo(db, ownerId, row);
+  const key: ContractTemplateKey = input.templateKey || context.defaults.templateKey;
+  const quantity = Number(explicitOrDefault(input.quantity, context.defaults.quantity)) || 0;
+  const price = Number(explicitOrDefault(input.price, context.defaults.price)) || 0;
+  const paymentMode = explicitOrDefault(input.paymentMode, context.defaults.paymentMode) || 'anticipado';
+  const creditClassPrice = Number(explicitOrDefault(input.creditClassPrice, context.defaults.creditClassPrice)) || 0;
+  const cutoffDay = Number(explicitOrDefault(input.cutoffDay, context.defaults.cutoffDay)) || 0;
+  const startsOn = explicitOrDefault(input.startsOn, context.defaults.startsOn) || fechaDeNegocioPanama();
+  const rescheduleFrom = explicitOrDefault(input.rescheduleFrom, context.defaults.rescheduleFrom);
+  const rescheduleTo = explicitOrDefault(input.rescheduleTo, context.defaults.rescheduleTo);
+  const planName = explicitOrDefault(input.planName, context.defaults.planName) || 'Acuerdo personalizado';
   const missing: string[] = [];
   for (const [value, label] of [
     [row.id_document, 'documento de identidad del cliente'], [row.legal_name, 'nombre legal de Eileen'],
     [row.legal_id, 'identificación legal de Eileen'], [row.contract_city, 'ciudad del contrato']
   ]) if (!value) missing.push(String(label));
-  if (!row.plan_id) missing.push('plan del expediente');
-  if (!Number(row.standard_price)) missing.push('precio del expediente');
-  const sessions = Number(key === 'paquete' ? row.sessions_included ?? 0 : row.monthly_session_target ?? row.sessions_included ?? 0);
-  if (key === 'rutinas' && (row.service_type !== 'rutinas' || !row.routines_per_month)) missing.push('plan de rutinas y rutinas por mes');
-  if (key !== 'rutinas' && !sessions) missing.push('sesiones incluidas en el expediente');
-  if (row.service_type === 'rutinas' && key !== 'rutinas') missing.push('selecciona el modelo de rutinas para este plan');
-  if (key === 'paquete' && row.billing_model !== 'package') missing.push('selecciona un plan de paquete en el expediente');
-  if (key === 'mensualidad' && row.billing_model !== 'monthly') missing.push('selecciona una mensualidad en el expediente');
-  const startsOn = input.startsOn || fechaDeNegocioPanama();
+  if (!quantity) missing.push(key === 'rutinas' ? 'rutinas al mes del contrato' : key === 'paquete' ? 'sesiones del paquete del contrato' : 'sesiones al mes del contrato');
+  if (!price) missing.push('precio del contrato');
+  if (!rescheduleFrom || !rescheduleTo) missing.push('ventana de reprogramación de lunes a viernes');
+  if (paymentMode === 'no_anticipado' && !creditClassPrice) missing.push('precio por clase a crédito del contrato');
+  const warnings: string[] = [];
+  const billing = context.billingConcept;
+  if (billing?.payer_client_id && billing.payer_client_id !== row.id) {
+    warnings.push(`Su cobro lo paga ${billing.payer_name}; el contrato no lo cambia.`);
+  } else if (billing) {
+    const billedPrice = Number(billing.price);
+    const billedMode = billing.kind === 'credit' ? 'no_anticipado' : 'anticipado';
+    if (price && Math.round(price * 100) !== Math.round(billedPrice * 100)) warnings.push(`Este contrato dice $${price.toFixed(2)}; hoy se le cobra $${billedPrice.toFixed(2)}. El contrato no cambia el cobro.`);
+    if (paymentMode !== billedMode) warnings.push(`Este contrato indica pago ${paymentMode === 'no_anticipado' ? 'a crédito' : 'anticipado'}; hoy se factura ${billedMode === 'no_anticipado' ? 'a crédito' : 'por anticipado'}. El contrato no cambia el cobro.`);
+  }
   const values = {
     OWNER_LEGAL_NAME: row.legal_name || '[pendiente: nombre legal]', OWNER_LEGAL_ID: row.legal_id || '[pendiente: identificación legal]',
     OWNER_LEGAL_ADDRESS: row.legal_address || 'No registrado', CONTRACT_CITY: row.contract_city || '[pendiente: ciudad]',
@@ -2474,16 +2566,40 @@ async function materialContrato(db: any, ownerId: string, clientId: string, inpu
     CLIENT_ADDRESS: row.address || 'No registrado', CLIENT_EMAIL: row.email || 'No registrado',
     CLIENT_BIRTH_DATE: row.birth_date ? dateOnly(row.birth_date) : null,
     EMERGENCY_CONTACT_NAME: row.emergency_contact_name || null, EMERGENCY_CONTACT_PHONE: row.emergency_contact_phone || null,
-    PLAN_ID: row.plan_id || null, PLAN_NAME: row.plan_name || 'Acuerdo personalizado del expediente',
-    SERVICE_TYPE: row.service_type === 'virtual' ? 'servicios virtuales' : row.service_type === 'rutinas' ? 'rutinas personalizadas' : 'servicios presenciales',
-    PRICE: '$' + Number(row.standard_price || 0).toFixed(2), SESSIONS: sessions || '[pendiente: sesiones]',
-    ROUTINES_PER_MONTH: Number(row.routines_per_month || 0), CUTOFF_DAY: Number(row.billing_cutoff_day || 1),
-    PAYMENT_MODE: row.payment_mode === 'no_anticipado' ? 'a crédito' : 'anticipado',
-    CREDIT_CLASS_PRICE: '$' + Number(row.credit_session_price || 25).toFixed(2), START_DATE: dmy(startsOn),
-    STARTS_ON: startsOn, COMMITMENT_MONTHS: input.commitmentMonths, PACKAGE_VALIDITY_DAYS: DIAS_USO_PAQUETE,
+    TEMPLATE_KEY: key, PLAN_ID: null, PLAN_NAME: planName,
+    SERVICE_TYPE: key === 'rutinas' ? 'servicios de rutinas personalizadas' : row.service_type === 'virtual' ? 'servicios virtuales' : 'servicios presenciales',
+    PRICE: price ? '$' + price.toFixed(2) : '[pendiente: precio]', PRICE_AMOUNT: price || null,
+    QUANTITY: quantity || null, SESSIONS: quantity || '[pendiente: sesiones]',
+    ROUTINES_PER_MONTH: quantity || '[pendiente: rutinas]', CUTOFF_DAY: cutoffDay || '[pendiente: corte]',
+    PAYMENT_MODE: paymentMode === 'no_anticipado' ? 'a crédito' : 'anticipado', PAYMENT_MODE_KEY: paymentMode,
+    CREDIT_CLASS_PRICE: creditClassPrice ? '$' + creditClassPrice.toFixed(2) : '[pendiente: precio por clase]', CREDIT_CLASS_PRICE_AMOUNT: creditClassPrice || null,
+    START_DATE: dmy(startsOn), STARTS_ON: startsOn, COMMITMENT_MONTHS: input.commitmentMonths,
+    RESCHEDULE_FROM: rescheduleFrom || '[pendiente: hora inicial]', RESCHEDULE_TO: rescheduleTo || '[pendiente: hora final]',
+    CANCELLATION_NOTICE_HOURS, RESCHEDULE_CHANGE_NOTICE_HOURS,
+    HOLIDAY_RULE: '[pendiente de definición por Eileen: indicar si la clase del feriado se descuenta o no del plan]',
+    PACKAGE_VALIDITY_DAYS: DIAS_USO_PAQUETE,
     PACKAGE_RENEWAL_DAYS: DIAS_RENOVACION_PAQUETE, TERMINATION_NOTICE_DAYS: CONTRACT_TERMINATION_NOTICE_DAYS, ACCEPTANCE_BLOCK: ''
   };
-  return { row, key, values, missing, bodyText: renderContractTemplate(key, values), version: contractTemplateVersion(key) };
+  const terms = { templateKey: key, quantity: quantity || null, price: price || null, paymentMode,
+    creditClassPrice: creditClassPrice || null, cutoffDay: cutoffDay || null, startsOn, commitmentMonths: input.commitmentMonths,
+    rescheduleFrom, rescheduleTo, planName };
+  return { row, key, values, terms, defaults: context.defaults, options: context.options, warnings, missing,
+    bodyText: renderContractTemplate(key, values), version: contractTemplateVersion(key) };
+}
+
+function contractInputFromSnapshot(values: Record<string, any>) {
+  const captured = (value: any) => typeof value === 'string' && value.startsWith('[pendiente:') ? undefined : value;
+  const priceAmount = captured(values.PRICE_AMOUNT) ?? (captured(values.PRICE) ? Number(String(values.PRICE).replace(/[^0-9.]/g, '')) || undefined : undefined);
+  const creditAmount = captured(values.CREDIT_CLASS_PRICE_AMOUNT) ?? (captured(values.CREDIT_CLASS_PRICE) ? Number(String(values.CREDIT_CLASS_PRICE).replace(/[^0-9.]/g, '')) || undefined : undefined);
+  return contractDraftSchema.parse({
+    templateKey: values.TEMPLATE_KEY,
+    quantity: captured(values.QUANTITY) ?? captured(values.SESSIONS) ?? captured(values.ROUTINES_PER_MONTH),
+    price: priceAmount,
+    paymentMode: values.PAYMENT_MODE_KEY ?? (values.PAYMENT_MODE === 'a crédito' ? 'no_anticipado' : 'anticipado'),
+    creditClassPrice: creditAmount,
+    cutoffDay: captured(values.CUTOFF_DAY), startsOn: captured(values.STARTS_ON), commitmentMonths: values.COMMITMENT_MONTHS || 0,
+    rescheduleFrom: captured(values.RESCHEDULE_FROM), rescheduleTo: captured(values.RESCHEDULE_TO), planName: captured(values.PLAN_NAME)
+  });
 }
 
 async function guardarPdfContrato(db: any, contractId: string, ownerId: string, clientId: string, pdf: Buffer, nombre = 'contrato-' + contractId + '.pdf') {
@@ -2507,7 +2623,8 @@ app.post('/api/clients/:id/contracts/preview', { preHandler: requireStaff }, asy
   const input = contractDraftSchema.parse(request.body || {}); const material = await materialContrato(sql, auth.sub, clientId, input);
   if (!material) return reply.code(404).send({ error: 'Cliente no encontrado' });
   const pdf = await contractPdf({ title: 'Contrato de servicios', subtitle: material.row.full_name + ' · borrador', body: material.bodyText });
-  return { templateKey: material.key, templateVersion: material.version, values: material.values, bodyText: material.bodyText,
+  return { templateKey: material.key, templateVersion: material.version, values: material.values, terms: material.terms,
+    defaults: material.defaults, options: material.options, warnings: material.warnings, bodyText: material.bodyText,
     missing: material.missing, canSend: !material.missing.length, pdfBase64: pdf.toString('base64') };
 });
 app.post('/api/clients/:id/contracts', { preHandler: requireStaff }, async (request, reply) => {
@@ -2535,9 +2652,8 @@ app.post('/api/contracts/:id/send', { preHandler: requireStaff }, async (request
   const result = await sql.begin(async transaction => {
     const [draft] = await transaction`SELECT * FROM client_contracts WHERE id = ${id} AND owner_id = ${auth.sub} AND status = 'borrador' FOR UPDATE`;
     if (!draft) return null;
-    const material = await materialContrato(transaction, auth.sub, draft.client_id, contractDraftSchema.parse({
-      templateKey: draft.template_key, startsOn: draft.values.STARTS_ON, commitmentMonths: draft.values.COMMITMENT_MONTHS
-    }));
+    const material = await materialContrato(transaction, auth.sub, draft.client_id,
+      contractDraftSchema.parse({ ...contractInputFromSnapshot(draft.values), templateKey: draft.template_key }));
     if (!material || material.missing.length) return { missing: material?.missing || ['expediente del cliente'] };
     const pdf = await contractPdf({ title: 'Contrato de servicios', subtitle: material.row.full_name + ' · enviado', body: material.bodyText });
     const document = await guardarPdfContrato(transaction, draft.id, auth.sub, draft.client_id, pdf);

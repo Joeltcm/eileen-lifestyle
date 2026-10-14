@@ -18,6 +18,8 @@ before(async () => {
   token = setup.datos.token; api.usarToken(token);
   const settings = await api.patch('/api/account-settings', { legalName: 'Entrenadora Ficticia', legalId: 'ID-FICTICIO-01', contractCity: 'Ciudad de Prueba' });
   assert.equal(settings.estado, 200, JSON.stringify(settings.datos));
+  const hours = await api.put('/api/working-hours', { tramos: [1, 2, 3, 4, 5].map(weekday => ({ weekday, startsAt: '07:00', endsAt: '19:00' })) });
+  assert.equal(hours.estado, 200, JSON.stringify(hours.datos));
 }, { timeout: 90000 });
 after(async () => { await db?.end({ timeout: 1 }); await server?.parar(); });
 const ok = (result, status = 201) => { assert.equal(result.estado, status, JSON.stringify(result.datos)); return result.datos; };
@@ -33,6 +35,17 @@ async function scenario(model = 'mensualidad', extra = {}) {
   return { plan, client, portal, portalToken: access.token };
 }
 const generate = async (s, extra = {}) => ok(await api.post('/api/clients/' + s.client.id + '/contracts', { templateKey: s.plan.service_type === 'rutinas' ? 'rutinas' : s.plan.billing_model === 'package' ? 'paquete' : 'mensualidad', send: true, ...extra }));
+async function commercialSnapshot(clientId) {
+  const [client] = await db`SELECT * FROM clients WHERE id = ${clientId}`;
+  const subscriptions = await db`SELECT * FROM billing_subscriptions WHERE beneficiary_client_id = ${clientId} OR payer_client_id = ${clientId} ORDER BY id`;
+  const billingInvoices = await db`SELECT * FROM billing_invoices WHERE payer_client_id = ${clientId} ORDER BY id`;
+  const billingLines = await db`SELECT bil.* FROM billing_invoice_lines bil JOIN billing_invoices bi ON bi.id = bil.invoice_id
+    WHERE bi.payer_client_id = ${clientId} OR bil.beneficiary_client_id = ${clientId} ORDER BY bil.id`;
+  const legacyInvoices = await db`SELECT * FROM invoices WHERE client_id = ${clientId} ORDER BY id`;
+  const packages = await db`SELECT * FROM session_packages WHERE client_id = ${clientId} ORDER BY id`;
+  const memberships = await db`SELECT * FROM memberships WHERE client_id = ${clientId} ORDER BY id`;
+  return JSON.parse(JSON.stringify({ client, subscriptions, billingInvoices, billingLines, legacyInvoices, packages, memberships }));
+}
 // PDFKit usa Helvetica/WinAnsi. Inspeccionamos los operandos hexadecimales de
 // sus streams de texto: no dependemos de una instalación externa en CI.
 function pdfText(bytes) {
@@ -44,7 +57,7 @@ function pdfText(bytes) {
   return text.replace(/\s+/g, ' ');
 }
 
-test('los tres modelos usan valores del expediente y las constantes, incluso un precio propio distinto del catálogo', async () => {
+test('los tres modelos precargan referencias sin acoplar el contrato al catálogo', async () => {
   for (const model of ['mensualidad', 'paquete', 'rutinas']) {
     const s = await scenario(model);
     if (model === 'mensualidad') ok(await api.patch('/api/clients/' + s.client.id, { fullName: s.client.full_name, standardPrice: 276, monthlySessionTarget: 8 }), 200);
@@ -55,10 +68,11 @@ test('los tres modelos usan valores del expediente y las constantes, incluso un 
     assert.match(text, model === 'rutinas' ? /4 rutinas.*90\.00/ : model === 'paquete' ? /12 sesiones.*300\.00/ : /8 clases.*276\.00/);
     if (model === 'paquete') { assert.match(text, /42 d[ií]as/); assert.match(text, /28 d[ií]as/); }
     else assert.match(text, new RegExp('corte.*' + Number(today().slice(-2))));
+    assert.match(text, /lunes a viernes.*07:00.*17:00.*24 horas/i);
     const contract = await generate(s); assert.equal(contract.status, 'enviado'); assert.ok(contract.pdf_document_id);
   }
 });
-test('faltan identidad, legales o plan: puede previsualizar, pero no enviar; no hay inserción parcial', async () => {
+test('faltan identidad o datos legales: puede previsualizar, pero no enviar; no hay inserción parcial', async () => {
   const s = await scenario('mensualidad', { client: { idDocument: '' } });
   const before = (await api.get('/api/clients/' + s.client.id + '/contracts')).datos.length;
   const preview = ok(await api.post('/api/clients/' + s.client.id + '/contracts/preview', {}), 200);
@@ -69,8 +83,11 @@ test('faltan identidad, legales o plan: puede previsualizar, pero no enviar; no 
   const missing = ok(await api.post('/api/clients/' + s.client.id + '/contracts', { send: true }), 409);
   assert.match(missing.error, /nombre legal.*identificación legal.*ciudad/);
   ok(await api.patch('/api/account-settings', { legalName: 'Entrenadora Ficticia', legalId: 'ID-FICTICIO-01', contractCity: 'Ciudad de Prueba' }), 200);
-  await db`UPDATE clients SET plan_id = NULL WHERE id = ${s.client.id}`;
-  assert.match(ok(await api.post('/api/clients/' + s.client.id + '/contracts', { send: true }), 409).error, /plan/);
+  await db`UPDATE clients SET plan_id = NULL, standard_price = 0, monthly_session_target = NULL, id_document = 'PASAPORTE-FICTICIO' WHERE id = ${s.client.id}`;
+  const custom = ok(await api.post('/api/clients/' + s.client.id + '/contracts', { templateKey: 'mensualidad', quantity: 6, price: 195,
+    paymentMode: 'anticipado', cutoffDay: 12, startsOn: today(), commitmentMonths: 2,
+    rescheduleFrom: '07:00', rescheduleTo: '17:00', planName: 'Acuerdo declarado', send: true }));
+  assert.equal(custom.values.PRICE, '$195.00'); assert.equal(custom.values.SESSIONS, 6);
 });
 test('guardar otra parte del expediente no borra los nuevos campos; un borrador se envía con los datos vigentes', async () => {
   const s = await scenario(); const draft = ok(await api.post('/api/clients/' + s.client.id + '/contracts', {}));
@@ -147,6 +164,80 @@ test('plantilla: marcador sin valor impide generar; fecha y hora exactas de Pana
   assert.throws(() => renderContractTemplate('mensualidad', {}), /marcadores sin resolver/);
   assert.equal(contractTimestamp(new Date('2030-07-09T04:31:00Z')), '08-07-2030 23:31');
 });
+test('contrato informativo distinto del cobro no modifica expediente, conceptos, facturas ni saldos', async () => {
+  const s = await scenario('mensualidad');
+  ok(await api.post('/api/clients/' + s.client.id + '/billing-subscriptions', { beneficiaryClientId: s.client.id,
+    payerClientId: s.client.id, kind: 'monthly', price: 280, sessionsReference: 8, startsOn: today() }));
+  const before = await commercialSnapshot(s.client.id);
+  const terms = { templateKey: 'mensualidad', quantity: 6, price: 333, paymentMode: 'anticipado', cutoffDay: 19,
+    startsOn: today(), commitmentMonths: 4, rescheduleFrom: '07:00', rescheduleTo: '17:00', planName: 'Acuerdo informativo distinto' };
+  const preview = ok(await api.post('/api/clients/' + s.client.id + '/contracts/preview', terms), 200);
+  assert.equal(preview.canSend, true); assert.match(preview.warnings.join(' '), /contrato dice \$333\.00.*cobra \$280\.00/i);
+  const contract = ok(await api.post('/api/clients/' + s.client.id + '/contracts', { ...terms, send: true }));
+  const signed = ok(await s.portal.post('/api/contracts/' + contract.id + '/sign', { accepted: true, signedName: s.client.full_name }), 200);
+  assert.equal(signed.template_version, 2);
+  assert.deepEqual(await commercialSnapshot(s.client.id), before);
+  const pdf = await fetch(server.base + '/api/contracts/' + contract.id + '/pdf', { headers: { Authorization: 'Bearer ' + s.portalToken } });
+  const text = pdfText(Buffer.from(await pdf.arrayBuffer()));
+  assert.match(text, /6 clases.*333\.00/); assert.match(text, /lunes a viernes.*07:00.*17:00.*24 horas/i);
+});
+test('ventana contractual se valida en servidor y el texto usa las constantes informativas', async () => {
+  const s = await scenario('mensualidad');
+  const base = { templateKey: 'mensualidad', quantity: 8, price: 240, paymentMode: 'anticipado', cutoffDay: 10,
+    startsOn: today(), commitmentMonths: 0, planName: 'Acuerdo de prueba' };
+  assert.equal((await api.post('/api/clients/' + s.client.id + '/contracts/preview', { ...base, rescheduleFrom: '07:00', rescheduleTo: '17:30' })).estado, 400);
+  assert.equal((await api.post('/api/clients/' + s.client.id + '/contracts/preview', { ...base, rescheduleFrom: '17:00', rescheduleTo: '17:00' })).estado, 400);
+  const preview = ok(await api.post('/api/clients/' + s.client.id + '/contracts/preview', { ...base, rescheduleFrom: '07:00', rescheduleTo: '17:00' }), 200);
+  assert.equal(preview.canSend, true); assert.match(preview.bodyText, /lunes a viernes.*07:00 a 17:00.*24 horas/is);
+  assert.match(preview.bodyText, /cancelaciones deben avisarse con al menos 24 horas/i);
+  assert.match(preview.bodyText, /no se guardan reprogramaciones para el mes siguiente/i);
+  assert.match(preview.bodyText, /feriados nacionales de Panamá/i);
+  const pack = await scenario('paquete');
+  const packagePreview = ok(await api.post('/api/clients/' + pack.client.id + '/contracts/preview', { ...base, templateKey: 'paquete', rescheduleFrom: '07:00', rescheduleTo: '17:00' }), 200);
+  assert.match(packagePreview.bodyText, /vigencia del paquete de 42 días/i);
+  const routines = await scenario('rutinas');
+  const routinePreview = ok(await api.post('/api/clients/' + routines.client.id + '/contracts/preview', { ...base, templateKey: 'rutinas', quantity: 4, rescheduleFrom: '07:00', rescheduleTo: '17:00' }), 200);
+  assert.doesNotMatch(routinePreview.bodyText, /cancelaciones deben|feriados nacionales|mes siguiente|vigencia del paquete/i);
+  assert.match(routinePreview.bodyText, /podrá dejar programada una rutina para un día feriado/i);
+});
+test('el horario precarga lunes a viernes recortado a 17:00; sin horario queda vacío y bloquea el envío', async () => {
+  const s = await scenario();
+  const configured = ok(await api.post('/api/clients/' + s.client.id + '/contracts/preview', {}), 200);
+  assert.equal(configured.terms.rescheduleFrom, '07:00'); assert.equal(configured.terms.rescheduleTo, '17:00');
+  ok(await api.put('/api/working-hours', { tramos: [] }), 200);
+  try {
+    const empty = ok(await api.post('/api/clients/' + s.client.id + '/contracts/preview', {}), 200);
+    assert.equal(empty.terms.rescheduleFrom, null); assert.equal(empty.terms.rescheduleTo, null);
+    assert.equal(empty.canSend, false); assert.match(empty.missing.join(' '), /ventana de reprogramación/);
+    assert.equal((await api.post('/api/clients/' + s.client.id + '/contracts', { send: true })).estado, 409);
+  } finally {
+    ok(await api.put('/api/working-hours', { tramos: [1, 2, 3, 4, 5].map(weekday => ({ weekday, startsAt: '07:00', endsAt: '19:00' })) }), 200);
+  }
+});
+test('avisos de precio, modalidad y otro pagador son informativos y no bloquean', async () => {
+  const own = await scenario();
+  ok(await api.post('/api/clients/' + own.client.id + '/billing-subscriptions', { beneficiaryClientId: own.client.id,
+    payerClientId: own.client.id, kind: 'monthly', price: 280, sessionsReference: 8, startsOn: today() }));
+  const different = ok(await api.post('/api/clients/' + own.client.id + '/contracts/preview', { price: 300, paymentMode: 'no_anticipado', creditClassPrice: 25 }), 200);
+  assert.equal(different.canSend, true); assert.match(different.warnings.join(' '), /\$300\.00.*\$280\.00/); assert.match(different.warnings.join(' '), /pago a crédito.*anticipado/i);
+  const payer = await scenario(); const beneficiary = await scenario();
+  ok(await api.post('/api/clients/' + beneficiary.client.id + '/billing-subscriptions', { beneficiaryClientId: beneficiary.client.id,
+    payerClientId: payer.client.id, kind: 'monthly', price: 300, sessionsReference: 12, startsOn: today() }));
+  const family = ok(await api.post('/api/clients/' + beneficiary.client.id + '/contracts/preview', {}), 200);
+  assert.equal(family.canSend, true); assert.match(family.warnings.join(' '), new RegExp('paga ' + payer.client.full_name, 'i'));
+});
+test('un contrato firmado de la plantilla v1 sigue intacto y descargable', async () => {
+  const s = await scenario(); const body = 'CONTRATO HISTÓRICO V304\nTexto que debe permanecer intacto.';
+  const [legacy] = await db`INSERT INTO client_contracts (owner_id, client_id, template_key, template_version, status, values, body_text,
+    sent_at, signed_at, signed_name, created_by) VALUES (${s.client.owner_id}, ${s.client.id}, 'mensualidad', 1, 'firmado',
+    ${db.json({ CLIENT_NAME: s.client.full_name, CLIENT_BIRTH_DATE: null })}, ${body}, now(), now(), ${s.client.full_name}, ${s.client.owner_id}) RETURNING *`;
+  const download = ok(await s.portal.get('/api/contracts/' + legacy.id + '/download'), 200);
+  assert.equal(download.bodyText, body); assert.equal(download.status, 'firmado');
+  const pdf = await fetch(server.base + '/api/contracts/' + legacy.id + '/pdf', { headers: { Authorization: 'Bearer ' + s.portalToken } });
+  assert.equal(pdf.status, 200); assert.match(pdfText(Buffer.from(await pdf.arrayBuffer())), /CONTRATO HISTÓRICO V304/);
+  const [after] = await db`SELECT template_version, body_text FROM client_contracts WHERE id = ${legacy.id}`;
+  assert.equal(after.template_version, 1); assert.equal(after.body_text, body);
+});
 test('otro dueño no ve, genera, envía ni descarga contratos; resumen solo de la cuenta', async () => {
   const s = await scenario(); const c = await generate(s);
   await db`INSERT INTO users (email, password_hash, full_name, role) SELECT 'otro.contratos@prueba.test', password_hash, 'Otra Entrenadora', 'trainer' FROM users WHERE email = ${CREDENCIALES.email}`;
@@ -188,13 +279,24 @@ test('horario fijo previo no se extiende al pasar a solo rutinas; agenda individ
 });
 test('pantalla a 375 px: expediente, mensualidad sugerida, PDF, aceptación con scroll y sin errores', async () => {
   const s = await scenario();
+  ok(await api.post('/api/clients/' + s.client.id + '/billing-subscriptions', { beneficiaryClientId: s.client.id,
+    payerClientId: s.client.id, kind: 'monthly', price: 280, sessionsReference: 8, startsOn: today() }));
+  const beforeUse = await commercialSnapshot(s.client.id);
   const staff = await abrirPantalla({ baseApi: server.base, token, ancho: 375 });
   try {
     await esperar(() => staff.evaluar('data.clients.length') > 0);
     staff.evaluar(`clientDetail('${s.client.id}')`);
     await esperar(() => staff.q('#generate-client-contract'));
     staff.clic(staff.q('#generate-client-contract'));
+    await esperar(() => staff.q('#contract-editor'));
     assert.equal(staff.q('#contract-editor [name="templateKey"]').value, 'mensualidad');
+    for (const name of ['quantity', 'price', 'paymentMode', 'cutoffDay', 'startsOn', 'commitmentMonths', 'rescheduleFrom', 'rescheduleTo']) assert.ok(staff.q(`#contract-editor [name="${name}"]`), name);
+    assert.equal(staff.q('[name="rescheduleTo"]').max, '17:00');
+    assert.ok(staff.qa('.contract-options article').length > 0 && staff.qa('.contract-options article').length <= 3);
+    assert.match(staff.q('.contract-options').textContent, /Mensualidad · .+ ·/);
+    staff.clic(staff.q('[data-contract-option="0"]'));
+    await esperar(() => staff.q('.contract-warning')?.textContent.includes('El contrato no cambia el cobro'));
+    assert.deepEqual(await commercialSnapshot(s.client.id), beforeUse, 'usar una opción solo rellena el contrato');
     staff.clic(staff.q('#preview-contract'));
     await esperar(() => staff.q('.contract-pdf-preview'));
     assert.match(staff.q('.contract-pdf-preview').src, /^data:application\/pdf/);

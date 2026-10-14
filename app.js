@@ -1,4 +1,4 @@
-const APP_VERSION = '304';
+const APP_VERSION = '305';
 const markPwaVersion = () => document.querySelectorAll('.topbar-actions').forEach(actions => {
   if (actions.querySelector('[data-pwa-version]')) return;
   const indicator = document.createElement('span');
@@ -5081,23 +5081,69 @@ function paperContractDialog(client, contractId) {
   };
 }
 function contractEditor(client) {
-  const classes = Number(client.billingModel === 'package' ? client.sessionsIncluded || 0 : client.monthlySessionTarget || client.sessionsIncluded || 0);
-  const perClass = classes ? money.format(client.plan / classes) : 'Sin referencia de clases';
-  const alternatives = data.plans.filter(plan => plan.active && plan.sessionsIncluded > 0).map(plan => `${plan.billingModel === 'package' ? 'Paquete' : 'Mensualidad'}: ${money.format(plan.price / plan.sessionsIncluded)} / clase`).join(' · ');
-  const box = document.createElement('div'); box.innerHTML = `<form id="contract-editor"><p class="eyebrow">CONTRATO · BORRADOR PARA REVISIÓN LEGAL</p><h2>Generar contrato</h2><p class="form-summary">Precio pactado: ${money.format(client.plan)} · ${perClass}${classes ? ' / clase' : ''}. ${escapeHtml(alternatives)}</p><p class="section-note">Plan: ${escapeHtml(client.planName || 'Sin plan')} · ${client.serviceType === 'rutinas' ? `${client.routinesPerMonth || 0} rutinas al mes` : `${classes} clases`} · corte día ${client.cutoffDay}. Los datos se toman del expediente; para cambiarlos edita el expediente.</p><label>Modelo<select name="templateKey"><option value="mensualidad">Mensualidad (sugerida)</option><option value="paquete">Paquete</option><option value="rutinas">Rutinas personalizadas</option></select></label><div class="form-row"><label>Inicio<input name="startsOn" type="date" value="${dateKey(today)}" required /></label><label>Meses de compromiso<input name="commitmentMonths" type="number" min="0" max="60" value="0" /><small>0 = mes a mes</small></label></div><label class="checkbox-line"><input name="send" type="checkbox" /> Enviar al portal al guardar</label><button type="button" class="secondary wide-button" id="preview-contract">Vista previa del PDF</button><button class="primary wide-button">Guardar contrato</button><div id="contract-preview"></div></form>`; openModal(box);
-  const form = box.querySelector('form'); const preview = box.querySelector('#contract-preview');
-  const payload = send => { const values = new FormData(form); return { templateKey: values.get('templateKey'), startsOn: values.get('startsOn'), commitmentMonths: Number(values.get('commitmentMonths') || 0), send }; };
-  box.querySelector('#preview-contract').onclick = async () => {
-    try {
-      const result = await api(`/api/clients/${client.id}/contracts/preview`, { method: 'POST', body: payload(false) });
-      preview.innerHTML = `<p class="section-note">${result.canSend ? 'Listo para enviar.' : `Faltan: ${escapeHtml(result.missing.join(', '))}.`}</p><a class="secondary" href="data:application/pdf;base64,${result.pdfBase64}" download="contrato-borrador.pdf">Descargar PDF</a><iframe title="Vista previa del contrato" class="contract-pdf-preview" src="data:application/pdf;base64,${result.pdfBase64}"></iframe><details><summary>Leer texto</summary><pre class="contract-text">${escapeHtml(result.bodyText)}</pre></details>`;
-    } catch (error) { toast(error.message, true); }
-  };
-  form.onsubmit = async event => {
-    event.preventDefault(); const sending = form.elements.send.checked;
-    try { form.classList.add('loading-state'); await api(`/api/clients/${client.id}/contracts`, { method: 'POST', body: payload(sending) }); await loadData(); renderAll(); clientDetail(client.id); toast(sending ? 'Contrato enviado al portal' : 'Contrato guardado como borrador'); }
-    catch (error) { toast(error.message, true); } finally { form.classList.remove('loading-state'); }
-  };
+  const box = document.createElement('div');
+  if (client.serviceMode === 'demo') {
+    box.innerHTML = `<p class="eyebrow">CONTRATO</p><h2>Primero convierte la demo en cliente</h2><p class="section-note">Los contratos informativos corresponden a servicios de pago. El período demo y sus rutinas actuales no se modifican hasta que confirmes la conversión.</p><button type="button" class="primary wide-button" id="contract-convert-demo">Convertir en cliente</button>`;
+    openModal(box); box.querySelector('#contract-convert-demo').onclick = () => demoConvert(client); return;
+  }
+  box.innerHTML = '<p class="empty">Preparando los términos del contrato…</p>'; openModal(box);
+  const numberOrNull = value => value === '' || value == null ? null : Number(value);
+  const optionLabel = option => `${option.templateKey === 'rutinas' ? 'Rutinas' : option.templateKey === 'paquete' ? 'Paquete' : 'Mensualidad'} · ${escapeHtml(option.name)} · ${option.quantity} ${option.unitLabel}${option.quantity === 1 ? '' : 's'} · ${money.format(option.price)} → ${money.format(option.price / option.quantity)} por ${option.unitLabel}`;
+  const showError = error => { box.innerHTML = `<p class="empty">${escapeHtml(error.message)}</p>`; };
+  api(`/api/clients/${client.id}/contracts/preview`, { method: 'POST', body: { templateKey: 'mensualidad' } }).then(initial => {
+    if (!box.isConnected) return;
+    const terms = initial.terms || initial.defaults;
+    const options = (initial.options || []).slice(0, 3);
+    box.innerHTML = `<form id="contract-editor"><p class="eyebrow">CONTRATO INFORMATIVO · BORRADOR PARA REVISIÓN LEGAL</p><h2>Generar contrato</h2>
+      <p class="section-note">Estos términos quedan únicamente en el contrato. No cambian el expediente, el plan de facturación, las facturas ni los saldos.</p>
+      <div id="contract-missing"></div><div id="contract-warning"></div>
+      <label>Modelo<select name="templateKey"><option value="mensualidad">Mensualidad (sugerida)</option><option value="paquete">Paquete</option><option value="rutinas">Rutinas personalizadas</option></select></label>
+      <input name="planName" type="hidden" value="${escapeHtml(terms.planName || 'Acuerdo personalizado')}" />
+      <div class="form-row"><label><span id="contract-quantity-label">Sesiones al mes</span><input name="quantity" type="number" min="1" max="366" value="${terms.quantity || ''}" required /></label><label>Precio declarado (USD)<input name="price" type="number" min="0.01" max="100000" step="0.01" value="${terms.price || ''}" required /></label></div>
+      <div class="form-row"><label>Modalidad de pago<select name="paymentMode"><option value="anticipado">Anticipado</option><option value="no_anticipado">A crédito</option></select></label><label id="contract-credit-price">Precio por clase a crédito<input name="creditClassPrice" type="number" min="0.01" max="100000" step="0.01" value="${terms.creditClassPrice || ''}" /></label></div>
+      <div class="form-row"><label>Día de corte<input name="cutoffDay" type="number" min="1" max="31" value="${terms.cutoffDay || client.cutoffDay || 1}" required /></label><label>Inicio<input name="startsOn" type="date" value="${escapeHtml(terms.startsOn || dateKey(today))}" required /></label></div>
+      <label>Meses de compromiso<input name="commitmentMonths" type="number" min="0" max="60" value="${terms.commitmentMonths || 0}" /><small>0 = mes a mes</small></label>
+      <fieldset class="contract-reschedule"><legend>Ventana de reprogramación · lunes a viernes</legend><div class="form-row"><label>Desde<input name="rescheduleFrom" type="time" value="${escapeHtml(terms.rescheduleFrom || '')}" required /></label><label>Hasta<input name="rescheduleTo" type="time" max="17:00" value="${escapeHtml(terms.rescheduleTo || '')}" required /></label></div><small>La hora final no puede pasar de las 17:00. Si Eileen cambia su disponibilidad, avisará con 24 horas de anticipación.</small></fieldset>
+      ${options.length ? `<section class="contract-options"><p class="eyebrow">OPCIONES DE REFERENCIA</p>${options.map((option, index) => `<article><div><b>${index === 0 && option.templateKey === 'mensualidad' ? 'Sugerida · ' : ''}${optionLabel(option)}</b></div><button type="button" class="secondary" data-contract-option="${index}">Usar este plan</button></article>`).join('')}</section>` : ''}
+      <label class="checkbox-line"><input name="send" type="checkbox" /> Enviar al portal al guardar</label>
+      <button type="button" class="secondary wide-button" id="preview-contract">Actualizar vista previa</button><button class="primary wide-button" id="save-contract">Guardar contrato</button><div id="contract-preview"></div></form>`;
+    const form = box.querySelector('form'); const preview = box.querySelector('#contract-preview');
+    form.elements.templateKey.value = terms.templateKey || 'mensualidad'; form.elements.paymentMode.value = terms.paymentMode || 'anticipado';
+    const payload = send => ({ templateKey: form.elements.templateKey.value, quantity: numberOrNull(form.elements.quantity.value), price: numberOrNull(form.elements.price.value), paymentMode: form.elements.paymentMode.value,
+      creditClassPrice: numberOrNull(form.elements.creditClassPrice.value), cutoffDay: numberOrNull(form.elements.cutoffDay.value), startsOn: form.elements.startsOn.value || null,
+      commitmentMonths: Number(form.elements.commitmentMonths.value || 0), rescheduleFrom: form.elements.rescheduleFrom.value || null,
+      rescheduleTo: form.elements.rescheduleTo.value || null, planName: form.elements.planName.value || 'Acuerdo personalizado', send });
+    const syncFields = () => {
+      const key = form.elements.templateKey.value; const credit = form.elements.paymentMode.value === 'no_anticipado';
+      box.querySelector('#contract-quantity-label').textContent = key === 'rutinas' ? 'Rutinas al mes' : key === 'paquete' ? 'Sesiones del paquete' : 'Sesiones al mes';
+      box.querySelector('#contract-credit-price').hidden = !credit;
+    };
+    const renderPreview = result => {
+      box.querySelector('#contract-missing').innerHTML = result.missing?.length ? `<div class="contract-missing"><b>Falta completar:</b> ${escapeHtml(result.missing.join(', '))}. Puedes revisar el expediente o Ajustes de la cuenta si se trata de datos personales o legales.</div>` : '';
+      box.querySelector('#contract-warning').innerHTML = (result.warnings || []).map(message => `<div class="contract-warning">${escapeHtml(message)}</div>`).join('');
+      preview.innerHTML = `<p class="section-note">${result.canSend ? 'Listo para enviar.' : 'Puedes guardar el borrador, pero no enviarlo hasta completar lo indicado.'}</p><a class="secondary" href="data:application/pdf;base64,${result.pdfBase64}" download="contrato-borrador.pdf">Descargar PDF</a><iframe title="Vista previa del contrato" class="contract-pdf-preview" src="data:application/pdf;base64,${result.pdfBase64}"></iframe><details><summary>Leer texto</summary><pre class="contract-text">${escapeHtml(result.bodyText)}</pre></details>`;
+      form.dataset.canSend = result.canSend ? 'true' : 'false';
+    };
+    const refreshPreview = async () => { const result = await api(`/api/clients/${client.id}/contracts/preview`, { method: 'POST', body: payload(false) }); renderPreview(result); return result; };
+    box.querySelectorAll('[data-contract-option]').forEach(button => button.onclick = async () => {
+      const option = options[Number(button.dataset.contractOption)];
+      form.elements.templateKey.value = option.templateKey; form.elements.quantity.value = option.quantity; form.elements.price.value = option.price;
+      form.elements.paymentMode.value = option.paymentMode; form.elements.creditClassPrice.value = option.creditClassPrice || '';
+      form.elements.cutoffDay.value = option.cutoffDay; form.elements.planName.value = option.planName; syncFields();
+      try { await refreshPreview(); toast('Opción copiada al contrato; el expediente y el cobro no cambiaron'); } catch (error) { toast(error.message, true); }
+    });
+    form.elements.templateKey.onchange = syncFields; form.elements.paymentMode.onchange = syncFields; syncFields(); renderPreview(initial);
+    box.querySelector('#preview-contract').onclick = () => refreshPreview().catch(error => toast(error.message, true));
+    form.onsubmit = async event => {
+      event.preventDefault(); const sending = form.elements.send.checked;
+      try {
+        form.classList.add('loading-state'); const checked = await refreshPreview();
+        if (sending && !checked.canSend) throw new Error('Completa los datos indicados antes de enviar el contrato al portal');
+        await api(`/api/clients/${client.id}/contracts`, { method: 'POST', body: payload(sending) });
+        await loadData(); renderAll(); clientDetail(client.id); toast(sending ? 'Contrato enviado al portal' : 'Contrato guardado como borrador');
+      } catch (error) { toast(error.message, true); } finally { form.classList.remove('loading-state'); }
+    };
+  }).catch(showError);
 }
 
 function clientDetail(id) {
