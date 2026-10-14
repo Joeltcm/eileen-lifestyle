@@ -2628,6 +2628,7 @@ async function materialContrato(db: any, ownerId: string, clientId: string, inpu
     PAYMENT_MODE: paymentMode === 'no_anticipado' ? 'a crédito' : 'anticipado', PAYMENT_MODE_KEY: paymentMode,
     CREDIT_CLASS_PRICE: key !== 'credito' ? null : creditClassPrice ? '$' + creditClassPrice.toFixed(2) : '[pendiente: precio por clase]', CREDIT_CLASS_PRICE_AMOUNT: key === 'credito' ? creditClassPrice || null : null,
     START_DATE: dmy(startsOn), STARTS_ON: startsOn, COMMITMENT_MONTHS: input.commitmentMonths,
+    TERM_TEXT: contractTermText(key, dmy(startsOn), input.commitmentMonths),
     RESCHEDULE_FROM: rescheduleFrom || '[pendiente: hora inicial]', RESCHEDULE_TO: rescheduleTo || '[pendiente: hora final]',
     CANCELLATION_NOTICE_HOURS, RESCHEDULE_CHANGE_NOTICE_HOURS,
     PACKAGE_VALIDITY_DAYS: DIAS_USO_PAQUETE,
@@ -2639,6 +2640,17 @@ async function materialContrato(db: any, ownerId: string, clientId: string, inpu
     rescheduleFrom, rescheduleTo, planName };
   return { row, key, values, terms, defaults: context.defaults, options: context.options, warnings, missing,
     bodyText: renderContractTemplate(key, values), version: contractTemplateVersion(key) };
+}
+
+// Vigencia: con 0 meses NO hay fecha límite pactada (termina cuando el cliente o Eileen lo acuerden); con meses, plazo fijo y luego renovación.
+function contractTermText(key: ContractTemplateKey, start: string, months: number) {
+  const notice = CONTRACT_TERMINATION_NOTICE_DAYS;
+  if (key === 'paquete') return months > 0
+    ? `El servicio comienza el ${start} con un compromiso acordado de ${months} ${months === 1 ? 'mes' : 'meses'}. Para no renovar el paquete, el cliente informa con ${notice} días de anticipación a la renovación prevista; el paquete no genera una mensualidad automática.`
+    : `El servicio comienza el ${start}. No se ha pactado una fecha límite para este contrato: termina cuando el cliente o Eileen lo acuerden. Para no renovar el paquete, el cliente informa con ${notice} días de anticipación a la renovación prevista; el paquete no genera una mensualidad automática.`;
+  return months > 0
+    ? `El servicio comienza el ${start} y se contrata por ${months} ${months === 1 ? 'mes' : 'meses'}. Al terminar ese plazo se renueva automáticamente mes a mes, salvo aviso de terminación de cualquiera de las partes con al menos ${notice} días de anticipación al día de corte.`
+    : `El servicio comienza el ${start}. No se ha pactado una fecha límite para este contrato: se renueva automáticamente cada mes y termina cuando el cliente o Eileen lo acuerden, mediante aviso a la otra parte con al menos ${notice} días de anticipación al día de corte.`;
 }
 
 function contractInputFromSnapshot(values: Record<string, any>) {

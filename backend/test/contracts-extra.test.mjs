@@ -70,3 +70,16 @@ test('un contrato por TIPO DE CLIENTE: a crédito -> contrato de crédito; antic
   assert.doesNotMatch(ap.bodyText, /crédito/i, 'el contrato anticipado no menciona crédito aunque se pida');
   assert.equal((await api.post(`/api/clients/${ant.client.id}/contracts/preview`, { templateKey: 'credito' })).estado, 409);
 });
+
+test('vigencia: con 0 meses NO hay fecha límite pactada; con meses, plazo fijo; nunca "por 0 meses"', async () => {
+  const s = await escenario();
+  const pedir = async (templateKey, commitmentMonths) => ok(await api.post(`/api/clients/${s.client.id}/contracts/preview`, { templateKey, quantity: 8, price: 200, commitmentMonths, rescheduleFrom: '08:00', rescheduleTo: '12:00' }), 200).bodyText;
+  const sin = await pedir('mensualidad', 0);
+  assert.match(sin, /No se ha pactado una fecha límite para este contrato/); assert.match(sin, /termina cuando el cliente o Eileen lo acuerden/);
+  assert.doesNotMatch(sin, /por 0 meses|Si el plazo es 0/);
+  const con = await pedir('mensualidad', 6);
+  assert.match(con, /se contrata por 6 meses/); assert.match(con, /se renueva automáticamente mes a mes/); assert.doesNotMatch(con, /No se ha pactado una fecha límite/);
+  assert.match(await pedir('mensualidad', 1), /por 1 mes\./, 'singular');
+  const paquete = await pedir('paquete', 0); assert.match(paquete, /No se ha pactado una fecha límite/); assert.match(paquete, /no genera una mensualidad automática/);
+  assert.match(await pedir('rutinas', 0), /No se ha pactado una fecha límite/);
+});

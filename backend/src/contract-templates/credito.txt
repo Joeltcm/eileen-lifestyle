@@ -6,7 +6,7 @@ En {{CONTRACT_CITY}}, el {{START_DATE}}, entre {{OWNER_LEGAL_NAME}}, identificac
 
 2. Pago a crédito. El cliente entrena sin pago anticipado. Al cierre de cada mes de servicio, el día de corte {{CUTOFF_DAY}}, se emite una factura con las clases dadas y las cancelaciones cobrables del periodo, a {{CREDIT_CLASS_PRICE}} USD cada una, que el cliente paga conforme a esa factura.
 
-3. Vigencia y renovación. El servicio comienza el {{START_DATE}} y se contrata por {{COMMITMENT_MONTHS}} meses. Si el plazo es 0, es mes a mes. Se renueva automáticamente salvo aviso de terminación con al menos {{TERMINATION_NOTICE_DAYS}} días de anticipación al día de corte.
+3. Vigencia y renovación. {{TERM_TEXT}}
 
 4. Clases y cancelaciones. Las cancelaciones deben avisarse con al menos {{CANCELLATION_NOTICE_HOURS}} horas de anticipación. No se aceptan cancelaciones el mismo día: una cancelación con menos de {{CANCELLATION_NOTICE_HOURS}} horas o el mismo día cuenta como clase dada y se cobra, aunque se pida reprogramarla. No presentarse también se cobra. Una reprogramación acordada reemplaza la original y se cobra una sola vez. Si cancela Eileen la clase no se cobra. Las clases reprogramadas deben tomarse dentro del mismo mes de servicio, de un día de corte al siguiente; no se guardan reprogramaciones para el mes siguiente. Viajar no suspende el acuerdo: confirmar una rutina por enlace el día de la clase cuenta como clase dada.
 

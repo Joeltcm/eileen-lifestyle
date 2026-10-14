@@ -1,4 +1,4 @@
-const APP_VERSION = '307';
+const APP_VERSION = '308';
 const markPwaVersion = () => document.querySelectorAll('.topbar-actions').forEach(actions => {
   if (actions.querySelector('[data-pwa-version]')) return;
   const indicator = document.createElement('span');
@@ -5228,7 +5228,7 @@ function contractEditor(client, existing = null) {
       <div class="form-row"><label><span id="contract-quantity-label">Sesiones al mes</span><input name="quantity" type="number" min="1" max="366" value="${terms.quantity || ''}" required /></label>${isCredit ? '<input name="price" type="hidden" value="" />' : `<label>Precio declarado (USD)<input name="price" type="number" min="0.01" max="100000" step="0.01" value="${terms.price || ''}" required /></label>`}</div>
       <input name="paymentMode" type="hidden" value="${isCredit ? 'no_anticipado' : 'anticipado'}" />${isCredit ? `<label id="contract-credit-price">Precio por clase (USD)<input name="creditClassPrice" type="number" min="0.01" max="100000" step="0.01" value="${terms.creditClassPrice || ''}" required /></label>` : '<input name="creditClassPrice" type="hidden" value="" />'}
       <div class="form-row"><label>Día de corte<input name="cutoffDay" type="number" min="1" max="31" value="${terms.cutoffDay || client.cutoffDay || 1}" required /></label><label>Inicio<input name="startsOn" type="date" value="${escapeHtml(terms.startsOn || dateKey(today))}" required /></label></div>
-      <label>Meses de compromiso<input name="commitmentMonths" type="number" min="0" max="60" value="${terms.commitmentMonths || 0}" /><small>0 = mes a mes</small></label>
+      <label>Meses de compromiso<input name="commitmentMonths" type="number" min="0" max="60" value="${terms.commitmentMonths || 0}" /><small>0 = sin fecha límite (mes a mes)</small></label>
       <fieldset class="contract-reschedule"><legend>Ventana de reprogramación · lunes a viernes</legend><div class="form-row"><label>Desde<input name="rescheduleFrom" type="time" value="${escapeHtml(terms.rescheduleFrom || '')}" required /></label><label>Hasta<input name="rescheduleTo" type="time" max="17:00" value="${escapeHtml(terms.rescheduleTo || '')}" required /></label></div><small>La hora final no puede pasar de las 17:00. Si Eileen cambia su disponibilidad, avisará con 24 horas de anticipación.</small></fieldset>
       ${options.length ? `<section class="contract-options"><p class="eyebrow">OPCIONES DE REFERENCIA</p>${options.map((option, index) => `<article><div><b>${index === 0 && option.templateKey === 'mensualidad' ? 'Sugerida · ' : ''}${optionLabel(option)}</b></div><button type="button" class="secondary" data-contract-option="${index}">Usar este plan</button></article>`).join('')}</section>` : ''}
       <label class="checkbox-line"><input name="isTest" type="checkbox" ${existing?.is_test ? 'checked' : ''} ${existing?.signed_at ? 'disabled' : ''} /> Contrato de prueba (se podrá eliminar aunque se firme)</label>
