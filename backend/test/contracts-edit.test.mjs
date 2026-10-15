@@ -87,6 +87,7 @@ test('pantalla a 375 px: Editar abre el contrato con sus montos y clases, guarda
     staff.evaluar(`clientDetail('${s.client.id}')`);
     const editar = await esperar(() => staff.q(`[data-contract-edit="${c.id}"]`), { mensaje: 'botón Editar' });
     assert.ok(staff.q(`[data-contract-delete="${c.id}"]`), 'botón Eliminar');
+    assert.ok(staff.q(`[data-contract-in-person="${c.id}"]`), '"Firmar en este dispositivo" también en un borrador');
     staff.clic(editar);
     await esperar(() => staff.q('#contract-editor'), { mensaje: 'editor' });
     assert.match(staff.q('#contract-editor').textContent, /Editar contrato/);
@@ -106,6 +107,26 @@ test('pantalla a 375 px: Editar abre el contrato con sus montos y clases, guarda
     await esperar(async () => (await db`SELECT count(*)::int AS n FROM client_contracts WHERE id = ${c.id}`)[0].n === 0, { mensaje: 'contrato eliminado' });
     assert.deepEqual(staff.errores, []);
   } finally { await staff.cerrar(); }
+});
+
+test('firmar EN PERSONA directo desde un borrador: se envía y se firma en un solo paso, con el mismo texto que se le mostró', async () => {
+  const s = await escenario(); const c = await s.crear(); assert.equal(c.status, 'borrador');
+  const mostrado = ok(await api.get(`/api/contracts/${c.id}/download`), 200).bodyText;
+  const firmado = ok(await api.post(`/api/contracts/${c.id}/sign-in-person`, { accepted: true, signedName: s.client.full_name, ...await signaturePayload() }), 200);
+  assert.equal(firmado.status, 'firmado'); assert.equal(firmado.signature_method, 'presencial'); assert.ok(firmado.sent_at && firmado.signed_in_person_by);
+  assert.ok(firmado.body_text.startsWith(mostrado), 'lo firmado es el texto que vio el cliente');
+});
+
+test('firmar en persona desde un borrador exige datos completos y que el texto no haya cambiado desde que se mostró', async () => {
+  const s = await escenario(); const c = await s.crear();
+  await db`UPDATE clients SET id_document = NULL WHERE id = ${s.client.id}`;
+  const falta = await api.post(`/api/contracts/${c.id}/sign-in-person`, { accepted: true, signedName: s.client.full_name, ...await signaturePayload() });
+  assert.equal(falta.estado, 409); assert.match(falta.datos.error, /Faltan datos/);
+  assert.equal((await db`SELECT status FROM client_contracts WHERE id = ${c.id}`)[0].status, 'borrador', 'no se firma ni se envía nada');
+  await db`UPDATE clients SET id_document = 'CID-NUEVO', address = 'Dirección cambiada después del borrador' WHERE id = ${s.client.id}`;
+  const cambio = await api.post(`/api/contracts/${c.id}/sign-in-person`, { accepted: true, signedName: s.client.full_name, ...await signaturePayload() });
+  assert.equal(cambio.estado, 409); assert.match(cambio.datos.error, /cambió/);
+  assert.equal((await db`SELECT status FROM client_contracts WHERE id = ${c.id}`)[0].status, 'borrador');
 });
 
 test('la reversa 072 devuelve la regla anterior (firmado = imborrable)', async () => {

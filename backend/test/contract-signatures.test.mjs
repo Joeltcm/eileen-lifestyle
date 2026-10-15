@@ -57,9 +57,9 @@ test('portal exige firma manuscrita válida, congela método, claves privadas, f
   const bytes = Buffer.from(await response.arrayBuffer()); assert.equal(createHash('sha256').update(bytes).digest('hex'), signed.pdf_sha256);
 });
 
-test('firma presencial: solo personal, contrato enviado, nombre exacto y auditoría del usuario', async () => {
+test('firma presencial: solo personal, borrador o enviado, nombre exacto y auditoría del usuario', async () => {
   const s = await scenario(); const draft = ok(await api.post('/api/clients/' + s.client.id + '/contracts', {})); const payload = await contractSignature(s.client.full_name);
-  assert.equal((await api.post('/api/contracts/' + draft.id + '/sign-in-person', payload)).estado, 409);
+  assert.equal((await s.portal.post('/api/contracts/' + draft.id + '/sign-in-person', payload)).estado, 403, 'solo personal; la clienta no firma por esta vía');
   const sent = ok(await api.post('/api/contracts/' + draft.id + '/send', {}), 200);
   assert.equal((await s.portal.post('/api/contracts/' + sent.id + '/sign-in-person', payload)).estado, 403);
   assert.equal((await api.post('/api/contracts/' + sent.id + '/sign-in-person', { ...payload, signedName: 'Nombre incorrecto' })).estado, 400);

@@ -2195,7 +2195,8 @@ describe('reporte mensual de agenda y cumplimiento', () => {
   });
 
   test('filtra el corte vigente de un cliente y recalcula su cumplimiento', async () => {
-    const cutoffDay = 15;
+    // El corte se ancla 10 días DESPUÉS de hoy (nunca el propio día de corte): con un 15 fijo la prueba fallaba cada día 15 (la sesión "del ciclo actual" cae mañana y no se puede completar).
+    const cutoffDay = ((Number(hoyPa().slice(8, 10)) + 9) % 28) + 1;
     const c = await api.post('/api/clients', { fullName: 'Filtro corte vigente', billingModel: 'single', standardPrice: 30, cutoffDay });
     const actual = cicloCortePa(hoyPa(), cutoffDay);
     const anterior = cicloCortePa(desplazarDiasPa(actual.inicio, -1), cutoffDay);

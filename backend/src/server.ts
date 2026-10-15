@@ -2812,25 +2812,31 @@ app.delete('/api/contracts/:id', { preHandler: requireStaff }, async (request, r
   return { deleted: true };
 });
 
+// Pasa un borrador a ENVIADO con los datos vigentes (PDF nuevo, versión de plantilla). Con `mismoTexto` falla si el texto resultante ya no es el que se le mostró a quien lo va
+// a firmar: así nadie firma en persona un texto distinto del que leyó.
+async function enviarBorrador(transaction: any, ownerId: string, draft: Record<string, any>, mismoTexto: boolean) {
+  const material = await materialContrato(transaction, ownerId, draft.client_id,
+    contractDraftSchema.parse({ ...contractInputFromSnapshot(draft.values), templateKey: draft.template_key }));
+  if (!material || material.missing.length) return { missing: material?.missing || ['expediente del cliente'] };
+  if (mismoTexto && material.bodyText !== draft.body_text) return { changed: true as const };
+  const owner = await currentOwnerSignature(transaction, ownerId);
+  const pdf = await contractPdfWithSignatures({ title: 'Contrato de servicios', subtitle: material.row.full_name + ' · enviado', body: material.bodyText,
+    values: material.values, ownerSignatureKey: owner.key });
+  const document = await guardarPdfContrato(transaction, draft.id, ownerId, draft.client_id, pdf);
+  const [contract] = await transaction`UPDATE client_contracts SET status = 'enviado', sent_at = now(), values = ${transaction.json(material.values)},
+    body_text = ${material.bodyText}, template_version = ${material.version}, pdf_document_id = ${document.id}, owner_signature_key = ${owner.key}
+    WHERE id = ${draft.id} RETURNING *`;
+  return { contract };
+}
 app.post('/api/contracts/:id/send', { preHandler: requireStaff }, async (request, reply) => {
   const auth = request.user as AuthUser; const id = z.string().uuid().parse((request.params as { id: string }).id);
   const result = await sql.begin(async transaction => {
     const [draft] = await transaction`SELECT * FROM client_contracts WHERE id = ${id} AND owner_id = ${auth.sub} AND status = 'borrador' FOR UPDATE`;
     if (!draft) return null;
-    const material = await materialContrato(transaction, auth.sub, draft.client_id,
-      contractDraftSchema.parse({ ...contractInputFromSnapshot(draft.values), templateKey: draft.template_key }));
-    if (!material || material.missing.length) return { missing: material?.missing || ['expediente del cliente'] };
-    const owner = await currentOwnerSignature(transaction, auth.sub);
-    const pdf = await contractPdfWithSignatures({ title: 'Contrato de servicios', subtitle: material.row.full_name + ' · enviado', body: material.bodyText,
-      values: material.values, ownerSignatureKey: owner.key });
-    const document = await guardarPdfContrato(transaction, draft.id, auth.sub, draft.client_id, pdf);
-    const [contract] = await transaction`UPDATE client_contracts SET status = 'enviado', sent_at = now(), values = ${transaction.json(material.values)},
-      body_text = ${material.bodyText}, template_version = ${material.version}, pdf_document_id = ${document.id}, owner_signature_key = ${owner.key}
-      WHERE id = ${id} RETURNING *`;
-    return { contract };
+    return enviarBorrador(transaction, auth.sub, draft, false);
   });
   if (!result) return reply.code(404).send({ error: 'Borrador de contrato no encontrado' });
-  if (!('contract' in result)) return reply.code(409).send({ code: 'contract_missing_data', error: 'Faltan datos: ' + result.missing.join(', '), missing: result.missing });
+  if (!('contract' in result)) return reply.code(409).send({ code: 'contract_missing_data', error: 'Faltan datos: ' + (result as any).missing.join(', '), missing: (result as any).missing });
   return contractResponse(result.contract!);
 });
 app.get('/api/contracts/pending-summary', { preHandler: requireStaff }, async request => {
@@ -2936,10 +2942,18 @@ app.post('/api/contracts/:id/sign-in-person', { preHandler: requireStaff }, asyn
   const result = await sql.begin(async transaction => {
     await lockBillingClient(transaction, owned.client_id);
     const [contract] = await transaction`SELECT cc.*, c.full_name, c.birth_date FROM client_contracts cc JOIN clients c ON c.id = cc.client_id
-      WHERE cc.id = ${id} AND cc.owner_id = ${auth.sub} AND cc.status = 'enviado' FOR UPDATE OF cc`;
-    return contract ? signContractRecord(transaction, contract, input, request, 'presencial', auth.sub) : null;
+      WHERE cc.id = ${id} AND cc.owner_id = ${auth.sub} AND cc.status IN ('borrador', 'enviado') FOR UPDATE OF cc`;
+    if (!contract) return null;
+    // Firmar en persona desde un BORRADOR: se envía y se firma en un solo paso (si faltan datos o el texto cambió desde que se mostró, no se firma nada).
+    if (contract.status === 'borrador') {
+      const enviado = await enviarBorrador(transaction, auth.sub, contract, true);
+      if ('missing' in enviado && enviado.missing) return { error: 'Faltan datos para firmar: ' + enviado.missing.join(', '), code: 409 };
+      if ('changed' in enviado) return { error: 'El contrato cambió desde que se mostró: ábrelo de nuevo para que el cliente lea la versión vigente.', code: 409 };
+      return signContractRecord(transaction, { ...contract, ...(enviado as { contract: Record<string, any> }).contract }, input, request, 'presencial', auth.sub);
+    }
+    return signContractRecord(transaction, contract, input, request, 'presencial', auth.sub);
   });
-  if (!result) return reply.code(409).send({ error: 'Solo puedes firmar presencialmente un contrato enviado y pendiente' });
+  if (!result) return reply.code(409).send({ error: 'Solo puedes firmar presencialmente un contrato sin firmar (borrador o enviado)' });
   if ('error' in result) return reply.code(result.code || 400).send({ error: result.error });
   return contractResponse(result.signed);
 });
