@@ -10303,7 +10303,7 @@ async function cancelarComoPerdidaPorElCliente(sessionId: string, despues?: (tra
   return sql.begin(async transaction => {
     const [actual] = await transaction`
       SELECT s.*, c.payment_mode, c.service_mode, c.owner_id, p.service_type FROM sessions s JOIN clients c ON c.id = s.client_id LEFT JOIN service_plans p ON p.id = c.plan_id
-      WHERE s.id = ${sessionId} AND s.status = 'scheduled' FOR UPDATE`;
+      WHERE s.id = ${sessionId} AND s.status = 'scheduled' FOR UPDATE OF s`;
     if (!actual) return null;
     if (actual.service_mode === 'demo' || actual.service_type === 'rutinas') return null;
     const esCredito = actual.payment_mode === 'no_anticipado';
