@@ -1,4 +1,4 @@
-const APP_VERSION = '320';
+const APP_VERSION = '321';
 const markPwaVersion = () => document.querySelectorAll('.topbar-actions').forEach(actions => {
   if (actions.querySelector('[data-pwa-version]')) return;
   const indicator = document.createElement('span');
@@ -541,7 +541,7 @@ async function loadData() {
 const initials = name => name.split(' ').slice(0, 2).map(word => word[0]).join('').toUpperCase();
 const modalidadPlan = modelo => modelo === 'package' ? 'Paquete' : modelo === 'single' ? 'Sesión suelta' : 'Mensualidad';
 const escapeHtml = value => String(value).replace(/[&<>"']/g, character => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[character]);
-const viewTitles = { dashboard: 'Buenos días', clients: 'Clientes', calendar: 'Agenda', routines: 'Rutinas', attendance: 'Asistencia', billing: 'Facturación', quotes: 'Cotizaciones' };
+const viewTitles = { dashboard: 'Buenos días', clients: 'Clientes', calendar: 'Agenda', routines: 'Rutinas', attendance: 'Asistencia', billing: 'Facturación', quotes: 'Cotizaciones', help: 'Ayuda' };
 const viewIds = new Set(Object.keys(viewTitles));
 const viewFromHash = () => {
   const id = window.location.hash.slice(1);
@@ -558,6 +558,7 @@ const navigate = (id, { replace = false } = {}) => {
   view(target);
   if (target === 'attendance') loadAttendanceReport();
   if (target === 'quotes') { if (quotesState.editor) renderQuoteEditor(); else loadQuotes(); }
+  if (target === 'help') renderHelp();
   if (target === 'billing' && document.querySelector('#billing .subtab.active')?.dataset.subtab === 'facturas-nuevo') newBillingInvoices();
   const hash = `#${target}`;
   if (window.location.hash !== hash) window.history[replace ? 'replaceState' : 'pushState'](null, '', hash);
@@ -7384,6 +7385,7 @@ function renderPortal() {
   portalRoutineHistoryMarkup();
   portalRoutineCycleSection(client);
   portalRoutineEntitlementsSection();
+  portalGuideSection();
   const ownSessions = new Map(portalData.sessions.map(item => [item.id, portalSession(item)]));
   renderPortalCalendar(ownSessions);
   document.getElementById('portal-plan').innerHTML = `<span class="commercial-label ${client.billing_model === 'package' ? 'package-label' : ''}">${client.payment_mode === 'no_anticipado' ? 'Crédito por sesión' : client.billing_model === 'package' ? 'Paquete' : 'Mensualidad'}</span><div><h3>${escapeHtml(client.plan_name || 'Plan personalizado')}</h3><p>${client.payment_mode === 'no_anticipado' ? `${money.format(Number(client.credit_session_price || 25))} por sesión · corte día ${client.billing_cutoff_day}` : `${money.format(Number(client.standard_price))}${client.billing_model === 'monthly' ? ` · corte día ${client.billing_cutoff_day}` : ` · ${client.sessions_included || 0} sesiones`}`}</p></div>`;
@@ -7580,9 +7582,10 @@ function accountMenu() {
   const box = document.createElement('div');
   box.innerHTML = `<p class="eyebrow">TU CUENTA</p><h2>${escapeHtml(nombre || 'Sesión activa')}</h2>
     <div class="account-card"><div><b>${escapeHtml(currentUser?.email || '')}</b><small>${rol}</small></div><span class="initials">${initials(nombre || currentUser?.email || '')}</span></div>
-    ${currentUser?.role !== 'client' ? '<button class="secondary wide-button" id="demo-contact-settings">Ajustes de la cuenta</button>' : ''}<button class="secondary wide-button" id="account-logout">Cerrar sesión</button>`;
+    ${currentUser?.role !== 'client' ? '<button class="secondary wide-button" id="account-help">💡 Centro de ayuda</button><button class="secondary wide-button" id="demo-contact-settings">Ajustes de la cuenta</button>' : ''}<button class="secondary wide-button" id="account-logout">Cerrar sesión</button>`;
   openModal(box);
   document.getElementById('demo-contact-settings')?.addEventListener('click', accountDemoSettings);
+  document.getElementById('account-help')?.addEventListener('click', () => openHelp());
   document.getElementById('account-logout').onclick = () => { modal.close(); logout(); };
 }
 async function accountDemoSettings() {

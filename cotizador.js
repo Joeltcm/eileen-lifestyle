@@ -111,7 +111,7 @@ function renderQuotesList() {
         : '<div class="qt-empty"><span aria-hidden="true">🧾</span><h3>Aún no tienes cotizaciones</h3><p>Crea la primera en un par de minutos: eliges a quién, qué le ofreces y qué condiciones aplican. Después la compartes por WhatsApp, enlace o PDF.</p><button type="button" class="primary" data-quote-new>+ Crear mi primera cotización</button></div>'))
     : '';
   root.innerHTML = `<div class="qt-head"><div><p class="eyebrow">PROPUESTAS PARA TUS CLIENTES</p><h2>Mis propuestas</h2><p class="qt-sub">Informativas: no son facturas ni contratos. Cada una lleva las condiciones y avisos que tú elijas.</p></div>
-      <div class="qt-head-actions"><button type="button" class="secondary" data-quote-clauses>📋 Mis cláusulas</button><button type="button" class="primary" data-quote-new>+ Nueva cotización</button></div></div>
+      <div class="qt-head-actions"><button type="button" class="help-chip" data-help-topic="cotizaciones">ⓘ Ayuda</button><button type="button" class="secondary" data-quote-clauses>📋 Mis cláusulas</button><button type="button" class="primary" data-quote-new>+ Nueva cotización</button></div></div>
     <div class="qt-toolbar"><div class="qt-tabs" role="tablist">${tabs}</div><label class="qt-search"><span aria-hidden="true">🔍</span><input type="search" id="quote-search" placeholder="Buscar por nombre, título o número" value="${escapeHtml(quotesState.query)}" /></label></div>
     <div class="qt-grid">${quotesState.items.map(quoteCardMarkup).join('')}</div>${empty}`;
   bindQuotesList(root);
