@@ -18,6 +18,7 @@ import { routineSuggestionsReady, suggestRoutine } from './routine-suggestions.j
 import { normalizeRegisteredVideo } from './video-upload-normalizer.js';
 import { accountStatementPdf, accountsReceivablePdf, billingInvoicePdf, compliancePdf, contractPdf, invoicePdf, monthlyFinancePdf, routineComplianceAllPdf, routineCompliancePdf } from './billing-reports.js';
 import { routineComplianceAll, routineComplianceSeries } from './routine-compliance-report.js';
+import { registerQuoteRoutes } from './quotes.js';
 import { fechaDeNegocioPanama, fechaPanamaDiasAtras } from './panama-date.js';
 import { resolveBillingEngine } from './billing-engine.js';
 import { planBillingGeneration, runBillingGeneration, shiftCutAfterPause } from './billing-generator.js';
@@ -79,6 +80,9 @@ app.setErrorHandler((error, _request, reply) => {
   app.log.error(error);
   return reply.code(500).send({ error: 'Error interno' });
 });
+
+// Cotizador (propuestas informativas con cláusulas). Va después del manejador de errores para que sus 4xx se respondan igual que los demás.
+await registerQuoteRoutes(app);
 
 async function requireAuth(request: FastifyRequest) {
   await request.jwtVerify();
@@ -8512,11 +8516,21 @@ app.get('/api/notifications', { preHandler: requireAuth }, async (request, reply
     ORDER BY created_at DESC
     LIMIT 50`;
   const rutinasPorEnviar = await routineCyclePrep(fechaDeNegocioPanama(), auth.sub);
+  // Cotizaciones enviadas que el cliente abrió en las últimas 48 horas: Eileen sabe que ya la vieron.
+  const cotizacionesVistas = await sql`
+    SELECT q.id::text AS id, q.number, q.title, q.view_count, q.viewed_at, COALESCE(c.full_name, q.prospect_name) AS recipient
+    FROM quotes q LEFT JOIN clients c ON c.id = q.client_id
+    WHERE q.owner_id = ${auth.sub} AND q.status = 'sent' AND q.share_token IS NOT NULL AND q.viewed_at >= now() - interval '48 hours'
+    ORDER BY q.viewed_at DESC LIMIT 20`;
   const contractNotificationRows = await sql`
     SELECT id, title, body, created_at FROM contract_notifications
     WHERE owner_id = ${auth.sub} AND read_at IS NULL
     ORDER BY created_at DESC LIMIT 50`;
   return [
+    ...cotizacionesVistas.map(quote => ({
+      type: 'quote_viewed', quoteId: quote.id, title: `Vieron tu cotización COT-${String(quote.number).padStart(4, '0')}`,
+      body: `${quote.recipient} abrió «${quote.title}»${Number(quote.view_count) > 1 ? ` (${quote.view_count} veces)` : ''}.`, scheduledFor: quote.viewed_at
+    })),
     ...rutinasPorEnviar.map(prep => ({
       type: 'routine_prep', clientId: prep.clientId, title: routinePrepPayload(prep).title, body: routinePrepPayload(prep).body, scheduledFor: prep.cutoffDate
     })),

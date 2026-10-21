@@ -555,3 +555,92 @@ export function routineComplianceAllPdf(data: { generatedOn: string; rows: Routi
     document.font('Helvetica').fontSize(8).fillColor(colors.muted).text(routineFootnote, 42, document.y, { width: 511 });
   });
 }
+
+// ── Cotización (informativa) ──────────────────────────────────────────────────────────────────────────────────────
+// Documento para el cliente: líneas, descuento, total, vigencia y las cláusulas que Eileen aplicó. No es una factura.
+export function quotePdf(quote: PdfRecord) {
+  return pdfBuffer(document => {
+    const rose = colors.rose;
+    brandHeader(document, `Cotización ${quote.code}`, `Emitida el ${dmy(quote.issuedOn)} · Válida hasta el ${dmy(quote.validUntil)}`);
+    const top = document.y;
+    infoPair(document, 'Para', clean(quote.recipient?.name), 42, top, 245);
+    infoPair(document, 'Contacto', clean([quote.recipient?.phone, quote.recipient?.email].filter(Boolean).join(' · ') || '-'), 310, top, 245);
+    document.y = top + 44;
+
+    document.font('Helvetica-Bold').fontSize(15).fillColor(colors.ink).text(clean(quote.title), 42, document.y, { width: 511 });
+    document.moveDown(0.4);
+    if (quote.intro) {
+      document.font('Helvetica').fontSize(10).fillColor(colors.ink).text(String(quote.intro), 42, document.y, { width: 511, lineGap: 2 });
+      document.moveDown(0.9);
+    } else document.moveDown(0.3);
+
+    // Tabla de líneas, con el detalle debajo del concepto.
+    const columns = [{ label: 'Concepto', x: 42, w: 286, align: 'left' as const }, { label: 'Cant.', x: 328, w: 50, align: 'right' as const }, { label: 'Precio', x: 378, w: 80, align: 'right' as const }, { label: 'Importe', x: 458, w: 95, align: 'right' as const }];
+    const header = () => {
+      ensureSpace(document, 60, `Cotización ${quote.code}`);
+      const y = document.y;
+      document.save().rect(42, y, 511, 22).fill(colors.blush).restore();
+      columns.forEach(column => document.font('Helvetica-Bold').fontSize(7).fillColor(colors.ink).text(column.label.toUpperCase(), column.x + 6, y + 8, { width: column.w - 12, align: column.align, lineBreak: false }));
+      document.y = y + 22;
+    };
+    header();
+    (quote.items as PdfRecord[]).forEach((item, index) => {
+      const detailHeight = item.detail ? document.heightOfString(String(item.detail), { width: 270 }) + 2 : 0;
+      const height = Math.max(26, 14 + document.heightOfString(String(item.description), { width: 270 }) + detailHeight + 6);
+      if (document.y + height > document.page.height - 70) { document.addPage(); document.y = 60; header(); }
+      const y = document.y;
+      if (index % 2) document.save().rect(42, y, 511, height).fill('#fdfafb').restore();
+      document.font('Helvetica-Bold').fontSize(9.5).fillColor(colors.ink).text(clean(item.description), 48, y + 8, { width: 270 });
+      if (item.detail) document.font('Helvetica').fontSize(8).fillColor(colors.muted).text(String(item.detail), 48, document.y + 1, { width: 270 });
+      const qty = Number(item.quantity); const qtyText = Number.isInteger(qty) ? String(qty) : String(qty).replace('.', ',');
+      document.font('Helvetica').fontSize(9).fillColor(colors.ink);
+      document.text(qtyText, columns[1].x + 6, y + 8, { width: columns[1].w - 12, align: 'right', lineBreak: false });
+      document.text(money(item.unitAmount), columns[2].x + 6, y + 8, { width: columns[2].w - 12, align: 'right', lineBreak: false });
+      document.font('Helvetica-Bold').text(money(item.amount), columns[3].x + 6, y + 8, { width: columns[3].w - 12, align: 'right', lineBreak: false });
+      document.moveTo(42, y + height).lineTo(553, y + height).strokeColor(colors.line).lineWidth(.5).stroke();
+      document.y = y + height;
+    });
+
+    // Totales
+    ensureSpace(document, 90, `Cotización ${quote.code}`);
+    let y = document.y + 12;
+    const line = (label: string, value: string, bold = false) => {
+      document.font(bold ? 'Helvetica-Bold' : 'Helvetica').fontSize(bold ? 12 : 9.5).fillColor(bold ? colors.ink : colors.muted).text(label, 340, y, { width: 118, align: 'right', lineBreak: false });
+      document.font(bold ? 'Helvetica-Bold' : 'Helvetica').fontSize(bold ? 13 : 9.5).fillColor(colors.ink).text(value, 458, y - (bold ? 1 : 0), { width: 95, align: 'right', lineBreak: false });
+      y += bold ? 24 : 17;
+    };
+    if (quote.discount?.amount > 0) {
+      line('Subtotal', money(quote.subtotal));
+      line(quote.discount.kind === 'percent' ? `Descuento (${quote.discount.value}%)` : 'Descuento', `- ${money(quote.discount.amount)}`);
+    }
+    document.save().roundedRect(340, y - 4, 213, 30, 8).fill(colors.pale).restore();
+    y += 3; line('Total', money(quote.total), true);
+    document.y = y + 6;
+
+    if (quote.notes) {
+      ensureSpace(document, 60, `Cotización ${quote.code}`);
+      document.font('Helvetica-Bold').fontSize(10).fillColor(colors.ink).text('Notas', 42, document.y);
+      document.font('Helvetica').fontSize(9.5).fillColor(colors.ink).text(String(quote.notes), 42, document.y + 3, { width: 511, lineGap: 2 });
+      document.moveDown(0.8);
+    }
+
+    if ((quote.clauses as PdfRecord[]).length) {
+      ensureSpace(document, 70, `Cotización ${quote.code}`);
+      document.moveDown(0.4);
+      document.font('Helvetica-Bold').fontSize(11).fillColor(colors.ink).text('Condiciones y avisos', 42, document.y);
+      document.moveTo(42, document.y + 3).lineTo(553, document.y + 3).strokeColor(rose).lineWidth(.8).stroke();
+      document.y += 10;
+      (quote.clauses as PdfRecord[]).forEach((clause, index) => {
+        const need = 22 + document.heightOfString(String(clause.body), { width: 490 });
+        ensureSpace(document, need, `Cotización ${quote.code}`);
+        document.font('Helvetica-Bold').fontSize(9.5).fillColor(rose).text(`${index + 1}.`, 42, document.y, { width: 18, continued: false });
+        document.font('Helvetica-Bold').fontSize(9.5).fillColor(colors.ink).text(clean(clause.title), 62, document.y - 11.5, { width: 490 });
+        document.font('Helvetica').fontSize(8.8).fillColor(colors.ink).text(String(clause.body), 62, document.y + 1, { width: 490, lineGap: 1.5 });
+        document.y += 8;
+      });
+    }
+    ensureSpace(document, 34, `Cotización ${quote.code}`);
+    document.moveDown(0.6);
+    document.font('Helvetica').fontSize(8).fillColor(colors.muted).text('Documento informativo: no es una factura ni un contrato. Los precios están en dólares estadounidenses (USD).', 42, document.y, { width: 511 });
+  });
+}
