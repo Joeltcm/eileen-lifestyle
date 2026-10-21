@@ -47,3 +47,49 @@ test('el expediente de un cliente de rutinas muestra enviadas, hechas, repeticio
     assert.deepEqual(p.errores, [], 'errores de JavaScript en la pantalla');
   } finally { await p.cerrar(); }
 });
+
+test('D) el portal del cliente muestra su ciclo con las mismas cifras, solo el suyo, a 375 px', async () => {
+  const enlace = await api.post(`/api/clients/${clientId}/access-link`, {});
+  const acceso = await api.post(`/api/auth/access-link/${String(enlace.datos.url).split('acceso=')[1]}`, { password: 'clave-del-portal-larga' });
+  const tokenPortal = acceso.datos.token; const portal = cliente(servidor.base); portal.usarToken(tokenPortal);
+  // API: el cliente ve su ciclo; Eileen y un cliente de otro plan no usan esta ruta
+  const mio = await portal.get('/api/portal/routine-cycle');
+  assert.equal(mio.estado, 200, JSON.stringify(mio.datos));
+  assert.deepEqual([mio.datos.metrics.sent, mio.datos.metrics.done, mio.datos.metrics.repeats], [2, 3, 1]);
+  assert.equal((await api.get('/api/portal/routine-cycle')).estado, 403, 'la entrenadora no usa la ruta del portal');
+  const [otroPlan] = await db`INSERT INTO service_plans (owner_id, name, billing_model, price, sessions_included, service_type, active) SELECT owner_id, 'Presencial UI', 'monthly', 0, 8, 'presencial', true FROM service_plans LIMIT 1 RETURNING id`;
+  const otro = (await api.post('/api/clients', { fullName: 'Pedro Presencial', cutoffDay: 1, email: 'pedro.ui@prueba.test', planId: otroPlan.id })).datos.id;
+  const enlaceOtro = await api.post(`/api/clients/${otro}/access-link`, {});
+  const accesoOtro = await api.post(`/api/auth/access-link/${String(enlaceOtro.datos.url).split('acceso=')[1]}`, { password: 'clave-del-portal-larga' });
+  const portalOtro = cliente(servidor.base); portalOtro.usarToken(accesoOtro.datos.token);
+  assert.equal((await portalOtro.get('/api/portal/routine-cycle')).estado, 409, 'un plan que no es de rutinas no tiene ciclo de rutinas');
+  // pantalla
+  const p = await abrirPantalla({ baseApi: servidor.base, token: tokenPortal, hash: '#portal-routines', ancho: 375 });
+  try {
+    const seccion = await esperar(() => p.q('#portal-routine-cycle .cycle-metrics') && p.q('#portal-routine-cycle'), { mensaje: 'ciclo en el portal' });
+    const texto = seccion.textContent;
+    assert.match(texto, /MI CICLO DE RUTINAS/); assert.match(texto, /Enviadas\s*2 de 3/); assert.match(texto, /Hechas\s*3/); assert.match(texto, /repetición n\.º 2/);
+    assert.match(texto, /Tu próximo ciclo empieza el \d{2}-\d{2}-\d{4}/);
+    assert.doesNotMatch(texto, /faltan por enviar/, 'el aviso de envío es solo para Eileen');
+    // ciclo anterior: sin rutinas, mensaje amable
+    p.clic(p.q('[data-cycle-step="-1"]', seccion));
+    await esperar(() => /Ciclo cerrado/.test(p.q('#portal-routine-cycle').textContent), { mensaje: 'ciclo anterior del portal' });
+    assert.deepEqual(p.errores, [], 'errores de JavaScript en el portal');
+  } finally { await p.cerrar(); }
+});
+
+test('D2) ciclo nuevo sin rutinas enviadas: el cliente ve un mensaje claro y nada del ciclo anterior (decisión 11)', async () => {
+  const p = await abrirPantalla({ baseApi: servidor.base, token: tokenStaff, ancho: 375 });
+  try {
+    await esperar(() => p.evaluar('typeof routineCycleMarkup === "function"'), { mensaje: 'función de la bitácora' });
+    const informe = { state: 'no_routines_yet', today: '2030-03-01', cycle: { start: '2030-03-01', end: '2030-03-31', nextStart: '2030-04-01', offset: 0, isCurrent: true, closed: false },
+      metrics: { quota: 3, sent: 0, done: 0, distinctDone: 0, repeats: 0, pending: 0, expired: 0, compliancePercent: 0, quality: { averagePercent: null, complete: 0, partial: 0, totalSeconds: 0, averageSeconds: null, feelings: {}, difficulties: {} } },
+      timeline: [], days: [], next: { start: '2030-04-01', end: '2030-04-30', sent: 0, quota: 3 } };
+    const cliente = p.evaluar(`routineCycleMarkup(${JSON.stringify(informe)}, 'client')`);
+    assert.match(cliente, /Tu ciclo empezó el 01-03-2030 y Eileen aún no te ha enviado rutinas/);
+    assert.doesNotMatch(cliente, /Repetir|cycle-event/);
+    const eileen = p.evaluar(`routineCycleMarkup(${JSON.stringify(informe)}, 'trainer')`);
+    assert.match(eileen, /Aún no hay rutinas enviadas para este ciclo/); assert.match(eileen, /faltan por enviar/);
+    assert.deepEqual(p.errores, []);
+  } finally { await p.cerrar(); }
+});

@@ -1,4 +1,4 @@
-const APP_VERSION = '313';
+const APP_VERSION = '314';
 const markPwaVersion = () => document.querySelectorAll('.topbar-actions').forEach(actions => {
   if (actions.querySelector('[data-pwa-version]')) return;
   const indicator = document.createElement('span');
@@ -7119,6 +7119,20 @@ function renderPortalDemo() {
   document.querySelectorAll('#portal-dashboard, #portal-calendar, #portal-billing, #portal-reports').forEach(view => { view.hidden = true; });
 }
 
+function portalRoutineCycleSection(client) {
+  if (client?.service_type !== 'rutinas') return;
+  const list = document.getElementById('portal-routines-list'); if (!list) return;
+  let target = document.getElementById('portal-routine-cycle');
+  if (!target) { list.insertAdjacentHTML('beforebegin', '<section class="card portal-routine-cycle" id="portal-routine-cycle"></section>'); target = document.getElementById('portal-routine-cycle'); }
+  let offset = 0;
+  const load = () => {
+    api(`/api/portal/routine-cycle?offset=${offset}`).then(report => {
+      target.innerHTML = `<p class="eyebrow">MI CICLO DE RUTINAS</p>${routineCycleMarkup(report, 'client')}`;
+      target.querySelectorAll('[data-cycle-step]').forEach(button => button.onclick = () => { offset = Math.min(0, Math.max(-24, offset + Number(button.dataset.cycleStep))); load(); });
+    }).catch(error => { target.innerHTML = `<p class="empty">${escapeHtml(error.message || 'No se pudo cargar tu ciclo.')}</p>`; });
+  };
+  load();
+}
 function renderPortal() {
   renderPortalContracts();
   if (portalData?.demo || portalData?.client?.service_mode === 'demo') { renderPortalDemo(); return; }
@@ -7226,6 +7240,7 @@ function renderPortal() {
   document.getElementById('portal-inbody').innerHTML = portalData.assessments.length ? `<div class="portal-inbody-grid">${portalData.assessments.slice(-4).reverse().map(item => `<article><span>${String(item.tested_at).slice(0, 10)}</span><b>${Number(item.values.weightKg || 0).toFixed(1)} kg</b><small>${Number(item.values.percentBodyFat || 0).toFixed(1)}% grasa · ${Number(item.values.skeletalMuscleMassKg || 0).toFixed(1)} kg músculo</small></article>`).join('')}</div>` : '<p class="empty">Todavía no hay evaluaciones confirmadas.</p>';
   document.getElementById('portal-routines-list').innerHTML = portalData.routines.length ? portalData.routines.map(portalRoutineCard).join('') : '<p class="empty">La entrenadora todavía no te ha asignado una rutina.</p>';
   portalRoutineHistoryMarkup();
+  portalRoutineCycleSection(client);
   const ownSessions = new Map(portalData.sessions.map(item => [item.id, portalSession(item)]));
   renderPortalCalendar(ownSessions);
   document.getElementById('portal-plan').innerHTML = `<span class="commercial-label ${client.billing_model === 'package' ? 'package-label' : ''}">${client.payment_mode === 'no_anticipado' ? 'Crédito por sesión' : client.billing_model === 'package' ? 'Paquete' : 'Mensualidad'}</span><div><h3>${escapeHtml(client.plan_name || 'Plan personalizado')}</h3><p>${client.payment_mode === 'no_anticipado' ? `${money.format(Number(client.credit_session_price || 25))} por sesión · corte día ${client.billing_cutoff_day}` : `${money.format(Number(client.standard_price))}${client.billing_model === 'monthly' ? ` · corte día ${client.billing_cutoff_day}` : ` · ${client.sessions_included || 0} sesiones`}`}</p></div>`;

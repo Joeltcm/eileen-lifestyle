@@ -9060,7 +9060,8 @@ app.get('/api/portal/summary', { preHandler: requireAuth }, async (request, repl
     id: client.id, full_name: client.full_name, email: client.email, goal: client.goal, status: client.status,
     billing_model: client.billing_model, standard_price: client.standard_price, billing_cutoff_day: client.billing_cutoff_day,
     payment_mode: client.payment_mode, credit_session_price: client.credit_session_price,
-    plan_name: client.plan_name, sessions_included: client.sessions_included, validity_days: client.validity_days
+    plan_name: client.plan_name, sessions_included: client.sessions_included, validity_days: client.validity_days,
+    service_type: client.service_type, routines_per_month: client.routines_per_month
   };
   // El portal necesita conocer los intervalos ocupados para que el cliente
   // pueda elegir un horario libre, pero nunca necesita saber quién ocupa el
@@ -9235,6 +9236,14 @@ app.get('/api/clients/:clientId/routine-history', { preHandler: requireStaff }, 
 
 // Bitácora del ciclo de rutinas: enviadas vs hechas, calidad y línea de tiempo (decisión 9). La misma función sirve al portal.
 const routineCycleQuerySchema = z.object({ offset: z.coerce.number().int().min(-24).max(0).default(0) });
+// Lo mismo que ve Eileen, pero con el identificador del token: el cliente solo puede pedir SU ciclo.
+app.get('/api/portal/routine-cycle', { preHandler: requireAuth }, async (request, reply) => {
+  const auth = request.user as AuthUser; if (auth.role !== 'client') return reply.code(403).send({ error: 'Acceso exclusivo para clientes' });
+  const client = await portalClient(auth.sub); if (!client) return reply.code(404).send({ error: 'Portal de cliente no encontrado' });
+  if (client.service_type !== 'rutinas') return reply.code(409).send({ error: 'Este plan no es de rutinas.' });
+  const { offset } = routineCycleQuerySchema.parse(request.query);
+  return routineCycleReport(String(client.id), offset);
+});
 app.get('/api/clients/:clientId/routine-cycle', { preHandler: requireStaff }, async (request, reply) => {
   const auth = request.user as AuthUser;
   const clientId = z.string().uuid().parse((request.params as { clientId: string }).clientId);
