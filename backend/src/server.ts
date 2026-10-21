@@ -25,6 +25,7 @@ import { exercisesHash, sameExerciseSet, routineSummaryText, type RoutineExercis
 import { CANCELLATION_NOTICE_HOURS, CONTRACT_TERMINATION_NOTICE_DAYS, RESCHEDULE_CHANGE_NOTICE_HOURS, RESCHEDULE_LATEST_END, contractTimestamp, contractTemplateVersion, normalizeContractName, renderContractTemplate, type ContractTemplateKey } from './contracts.js';
 import { validateSignaturePng, type SignatureStroke } from './contract-signatures.js';
 import { routineCutoffPeriodOffset, routineCycle } from './routine-cycle.js';
+import { routineCycleReport } from './routine-cycle-report.js';
 
 type AuthUser = { sub: string; role: 'admin' | 'trainer' | 'client'; email: string };
 const app = Fastify({ logger: true, trustProxy: true });
@@ -9203,6 +9204,17 @@ app.get('/api/clients/:clientId/routine-history', { preHandler: requireStaff }, 
       averageElapsedSeconds: timed.length ? Math.round(timed.reduce((sum, item) => sum + item.elapsed_seconds, 0) / timed.length) : 0,
       omittedExercises: [...omitted.entries()].sort((a, b) => b[1] - a[1]).slice(0, 8).map(([name, count]) => ({ name, count })) }
   };
+});
+
+// Bitácora del ciclo de rutinas: enviadas vs hechas, calidad y línea de tiempo (decisión 9). La misma función sirve al portal.
+const routineCycleQuerySchema = z.object({ offset: z.coerce.number().int().min(-24).max(0).default(0) });
+app.get('/api/clients/:clientId/routine-cycle', { preHandler: requireStaff }, async (request, reply) => {
+  const auth = request.user as AuthUser;
+  const clientId = z.string().uuid().parse((request.params as { clientId: string }).clientId);
+  const { offset } = routineCycleQuerySchema.parse(request.query);
+  const report = await routineCycleReport(clientId, offset, { ownerId: auth.sub });
+  if (!report) return reply.code(404).send({ error: 'Cliente no encontrado' });
+  return report;
 });
 
 const routineDurationCorrectionSchema = z.object({ elapsedSeconds: z.coerce.number().int().min(0).max(86400) });
