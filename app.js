@@ -1,4 +1,4 @@
-const APP_VERSION = '316';
+const APP_VERSION = '317';
 const markPwaVersion = () => document.querySelectorAll('.topbar-actions').forEach(actions => {
   if (actions.querySelector('[data-pwa-version]')) return;
   const indicator = document.createElement('span');
@@ -922,7 +922,26 @@ function moverSesionA(sesion, fechaDestino) {
 // acierta nunca.
 let sesionAMover = null;
 
+// Rutinas hechas por los clientes, marcadas en el calendario general (solo lectura; fecha y hora de Panamá).
+// Cuenta toda ejecución cerrada con más de 0 %, completa o parcial. La hora solo se muestra si el servidor la registró.
+const calendarRoutineRuns = { key: '', fetchedAt: 0, loading: false, runs: [] };
+function ensureCalendarRoutineRuns() {
+  const monthStart = new Date(calendarCursor.getFullYear(), calendarCursor.getMonth(), 1, 12);
+  const monthEnd = new Date(calendarCursor.getFullYear(), calendarCursor.getMonth() + 1, 0, 12);
+  const from = dateKey(mondayFor(monthStart)); const to = dateKey(addDays(mondayFor(monthEnd), 6)); const key = `${from}|${to}`;
+  if (calendarRoutineRuns.loading || (calendarRoutineRuns.key === key && Date.now() - calendarRoutineRuns.fetchedAt < 60000)) return;
+  calendarRoutineRuns.loading = true;
+  api(`/api/routine-runs?from=${from}&to=${to}`)
+    .then(rows => { Object.assign(calendarRoutineRuns, { key, fetchedAt: Date.now(), runs: Array.isArray(rows) ? rows : [] }); })
+    .catch(() => { Object.assign(calendarRoutineRuns, { key, fetchedAt: Date.now(), runs: [] }); })
+    .finally(() => { calendarRoutineRuns.loading = false; if (document.getElementById('week-calendar')) renderCalendar(); });
+}
+const routineRunsOn = key => calendarRoutineRuns.runs.filter(run => run.date === key);
+const routineRunTime = run => (run.at ? horaPanama(run.at) : '');
+const routineRunLabel = run => `${run.percent >= 100 ? 'completa' : `parcial (${run.percent} %)`}${run.runNumber > 1 ? ` · repetición n.º ${run.runNumber}` : ''}${run.seconds ? ` · ${routineSecondsText(run.seconds)}` : ''}`;
+const routineRunLine = run => `<article class="day-session rutina-hecha"><time>${routineRunTime(run) || '✓'}</time><div><b>${escapeHtml(run.clientName)}${run.demo ? ' · demo' : ''}</b><span>${escapeHtml(run.routineTitle)}</span><small>Rutina hecha · ${routineRunLabel(run)}</small></div><span class="session-state rutina-hecha">Rutina</span></article>`;
 function renderCalendar() {
+  ensureCalendarRoutineRuns();
   const grid = document.getElementById('week-calendar');
   const range = calendarRange();
   const visibleSessions = sessionsBetween(range.start, range.end);
@@ -943,14 +962,14 @@ function renderCalendar() {
     const key = dateKey(range.start);
     const sessions = visibleSessions.filter(session => session.date === key);
     grid.className = 'calendar-grid calendar-day';
-    grid.innerHTML = `<div class="day-focus"><span>${new Intl.DateTimeFormat('es-PA', { weekday: 'long' }).format(range.start)}</span><strong>${range.start.getDate()}</strong><small>${capitalized(new Intl.DateTimeFormat('es-PA', { month: 'long', year: 'numeric' }).format(range.start))}</small></div><div class="day-timeline">${sessions.length ? sessions.map(session => `<article class="day-session ${estadoSesion(session)}"><time>${session.time}</time><div><b>${escapeHtml(session.client)}</b><span>${escapeHtml(session.routine)}</span><small>${escapeHtml(session.mode)}</small></div><span class="session-state ${estadoSesion(session)}">${sessionStateLabel(session)}</span></article>`).join('') : '<div class="calendar-empty"><b>Día disponible</b><span>No hay sesiones programadas.</span><button class="secondary" data-action="new-session">+ Agendar sesión</button></div>'}</div>`;
+    grid.innerHTML = `<div class="day-focus"><span>${new Intl.DateTimeFormat('es-PA', { weekday: 'long' }).format(range.start)}</span><strong>${range.start.getDate()}</strong><small>${capitalized(new Intl.DateTimeFormat('es-PA', { month: 'long', year: 'numeric' }).format(range.start))}</small></div><div class="day-timeline">${sessions.length ? sessions.map(session => `<article class="day-session ${estadoSesion(session)}"><time>${session.time}</time><div><b>${escapeHtml(session.client)}</b><span>${escapeHtml(session.routine)}</span><small>${escapeHtml(session.mode)}</small></div><span class="session-state ${estadoSesion(session)}">${sessionStateLabel(session)}</span></article>`).join('') : '<div class="calendar-empty"><b>Día disponible</b><span>No hay sesiones programadas.</span><button class="secondary" data-action="new-session">+ Agendar sesión</button></div>'}${routineRunsOn(key).map(routineRunLine).join('')}</div>`;
   } else if (calendarMode === 'week') {
     const names = ['Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb', 'Dom'];
     grid.className = 'calendar-grid calendar-week';
     grid.innerHTML = names.map((name, index) => {
       const date = addDays(range.start, index); const key = dateKey(date);
       const sessions = visibleSessions.filter(session => session.date === key);
-      return `<button type="button" class="day-col ${key === dateKey(today) ? 'today' : ''} ${key === dateKey(calendarCursor) ? 'selected' : ''}" data-calendar-date="${key}"><span class="day-name">${name}</span><span class="day-num">${date.getDate()}</span>${sessions.map(session => `<span class="session-chip ${estadoSesion(session)} ${sesionAMover === session.id ? 'moviendo' : ''}" data-mover-sesion="${session.id}" draggable="${session.status === 'scheduled' && !sesionEnPausa(session)}"><b>${session.time}</b> ${sesionEnPausa(session) ? '⏸ ' : ''}${sesionDeViaje(session) ? '✈ ' : ''}${session.client.split(' ')[0]}</span>`).join('')}</button>`;
+      return `<button type="button" class="day-col ${key === dateKey(today) ? 'today' : ''} ${key === dateKey(calendarCursor) ? 'selected' : ''}" data-calendar-date="${key}"><span class="day-name">${name}</span><span class="day-num">${date.getDate()}</span>${sessions.map(session => `<span class="session-chip ${estadoSesion(session)} ${sesionAMover === session.id ? 'moviendo' : ''}" data-mover-sesion="${session.id}" draggable="${session.status === 'scheduled' && !sesionEnPausa(session)}"><b>${session.time}</b> ${sesionEnPausa(session) ? '⏸ ' : ''}${sesionDeViaje(session) ? '✈ ' : ''}${session.client.split(' ')[0]}</span>`).join('')}${routineRunsOn(key).map(run => `<span class="session-chip rutina-hecha" title="${escapeHtml(`Rutina hecha: ${run.clientName} · ${run.routineTitle} · ${routineRunLabel(run)}`)}">${routineRunTime(run) ? `<b>${routineRunTime(run)}</b> ✓ ` : '<b>✓</b> '}${escapeHtml(run.clientName.split(' ')[0])}</span>`).join('')}</button>`;
     }).join('');
     requestAnimationFrame(() => {
       const selected = grid.querySelector('.selected');
@@ -966,7 +985,7 @@ function renderCalendar() {
     grid.innerHTML = `${names.map(name => `<span class="month-weekday">${name}</span>`).join('')}${Array.from({ length: cells }, (_, index) => {
       const date = addDays(gridStart, index); const key = dateKey(date);
       const sessions = data.sessions.filter(session => session.date === key).sort((a, b) => a.time.localeCompare(b.time));
-      return `<button type="button" class="month-day ${date.getMonth() !== calendarCursor.getMonth() ? 'outside' : ''} ${key === dateKey(today) ? 'today' : ''}" data-calendar-date="${key}"><span class="month-day-number">${date.getDate()}</span><span class="month-events">${sessions.slice(0, 2).map(session => `<span class="month-event ${estadoSesion(session)}"><i></i><b>${session.time}</b> ${sesionEnPausa(session) ? '⏸ ' : ''}${sesionDeViaje(session) ? '✈ ' : ''}${session.client.split(' ')[0]}</span>`).join('')}${sessions.length > 2 ? `<small>+${sessions.length - 2} más</small>` : ''}</span></button>`;
+      return `<button type="button" class="month-day ${date.getMonth() !== calendarCursor.getMonth() ? 'outside' : ''} ${key === dateKey(today) ? 'today' : ''}" data-calendar-date="${key}"><span class="month-day-number">${date.getDate()}</span><span class="month-events">${sessions.slice(0, 2).map(session => `<span class="month-event ${estadoSesion(session)}"><i></i><b>${session.time}</b> ${sesionEnPausa(session) ? '⏸ ' : ''}${sesionDeViaje(session) ? '✈ ' : ''}${session.client.split(' ')[0]}</span>`).join('')}${sessions.length > 2 ? `<small>+${sessions.length - 2} más</small>` : ''}${routineRunsOn(key).length ? `<small class="month-routine" title="Rutinas hechas por los clientes">✓ ${routineRunsOn(key).length} rutina${routineRunsOn(key).length === 1 ? '' : 's'}</small>` : ''}</span></button>`;
     }).join('')}`;
   }
   // Después de las ramas: cada una reescribe grid.className entero, así que
@@ -1026,6 +1045,9 @@ function renderCalendar() {
           : `<div class="session-management"><button type="button" class="secondary edit-session" data-edit-session="${session.id}">Editar horario</button><button type="button" class="secondary" data-purge-session="${session.id}">Eliminar</button>${session.status === 'scheduled' && !session.routineOfferStatus && !sesionEnPausa(session) ? `<button type="button" class="secondary proponer-rutina-fila" data-proponer-rutina="${session.id}">Proponer rutina</button>` : ''}${session.routineOfferStatus === 'offered' && !session.routineOfferExpired ? `<button type="button" class="secondary" data-retirar-rutina="${session.id}">Retirar la rutina ofrecida</button>` : ''}${sessionComplianceForm(session)}</div>`}
       </details>`).join('')
     : '<p class="empty">No hay clases este día.</p>';
+  const rutinasDelDia = routineRunsOn(diaElegido);
+  if (rutinasDelDia.length) document.getElementById('session-list').insertAdjacentHTML('beforeend', `<div class="routine-runs-day"><p class="eyebrow">RUTINAS HECHAS ESTE DÍA</p>${rutinasDelDia.map(routineRunLine).join('')}</div>`);
+  if (rutinasDelDia.length) document.getElementById('session-control-copy').textContent += ` · ${rutinasDelDia.length} rutina${rutinasDelDia.length === 1 ? '' : 's'} hecha${rutinasDelDia.length === 1 ? '' : 's'}`;
 }
 const routineVideoCount = routine => (routine.exercises || []).filter(exercise => {
   const entry = exerciseCatalog.find(item => item.id === exercise.catalogId || item.slug === exercise.catalogId);

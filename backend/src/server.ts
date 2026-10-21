@@ -9234,6 +9234,29 @@ app.get('/api/clients/:clientId/routine-history', { preHandler: requireStaff }, 
   };
 });
 
+// Rutinas que los clientes hicieron en un rango de días, para marcarlas en el calendario general (fecha y hora de Panamá).
+// Cuenta toda ejecución cerrada con porcentaje > 0, completa o parcial (decisión 9 de Joel); la hora solo existe si el servidor la registró.
+const routineRunsRangeSchema = z.object({ from: z.string().date(), to: z.string().date() }).refine(value => value.from <= value.to && (Date.parse(value.to) - Date.parse(value.from)) / 86_400_000 <= 62, { message: 'El rango debe ser de máximo 62 días' });
+app.get('/api/routine-runs', { preHandler: requireStaff }, async request => {
+  const auth = request.user as AuthUser;
+  const { from, to } = routineRunsRangeSchema.parse(request.query);
+  const rows = await sql`
+    SELECT rc.id::text AS id, rc.client_id::text AS client_id, c.full_name, c.service_mode, r.title,
+      rc.completed_on::text AS date, rc.completed_at, rc.run_number, rc.completion_percent,
+      COALESCE(NULLIF(rc.elapsed_seconds, 0), rc.duration_seconds, 0) AS seconds
+    FROM routine_completions rc
+    JOIN clients c ON c.id = rc.client_id JOIN routines r ON r.id = rc.routine_id
+    WHERE c.owner_id = ${auth.sub} AND rc.completion_percent > 0
+      AND rc.completed_on >= ${from}::date AND rc.completed_on <= ${to}::date
+    ORDER BY rc.completed_on, rc.completed_at NULLS LAST, c.full_name
+    LIMIT 2000`;
+  return rows.map(row => ({
+    id: row.id, clientId: row.client_id, clientName: row.full_name, demo: row.service_mode === 'demo', routineTitle: row.title,
+    date: row.date, at: row.completed_at ? new Date(row.completed_at as string).toISOString() : null,
+    runNumber: Number(row.run_number) || 1, percent: Number(row.completion_percent) || 0, seconds: Number(row.seconds) || 0
+  }));
+});
+
 // Bitácora del ciclo de rutinas: enviadas vs hechas, calidad y línea de tiempo (decisión 9). La misma función sirve al portal.
 const routineCycleQuerySchema = z.object({ offset: z.coerce.number().int().min(-24).max(0).default(0) });
 // Lo mismo que ve Eileen, pero con el identificador del token: el cliente solo puede pedir SU ciclo.
