@@ -26,6 +26,7 @@ import { CANCELLATION_NOTICE_HOURS, CONTRACT_TERMINATION_NOTICE_DAYS, RESCHEDULE
 import { validateSignaturePng, type SignatureStroke } from './contract-signatures.js';
 import { routineCutoffPeriodOffset, routineCycle } from './routine-cycle.js';
 import { routineCycleReport } from './routine-cycle-report.js';
+import { routineCyclePrep, type RoutinePrepItem } from './routine-cycle-prep.js';
 
 type AuthUser = { sub: string; role: 'admin' | 'trainer' | 'client'; email: string };
 const app = Fastify({ logger: true, trustProxy: true });
@@ -8472,11 +8473,15 @@ app.get('/api/notifications', { preHandler: requireAuth }, async (request, reply
     WHERE owner_id = ${auth.sub} AND read_at IS NULL
     ORDER BY created_at DESC
     LIMIT 50`;
+  const rutinasPorEnviar = await routineCyclePrep(fechaDeNegocioPanama(), auth.sub);
   const contractNotificationRows = await sql`
     SELECT id, title, body, created_at FROM contract_notifications
     WHERE owner_id = ${auth.sub} AND read_at IS NULL
     ORDER BY created_at DESC LIMIT 50`;
   return [
+    ...rutinasPorEnviar.map(prep => ({
+      type: 'routine_prep', clientId: prep.clientId, title: routinePrepPayload(prep).title, body: routinePrepPayload(prep).body, scheduledFor: prep.cutoffDate
+    })),
     ...viajesSinRutina.map(viaje => {
       const [a, m, d] = String(viaje.starts_on).split('-'); const [a2, m2, d2] = viaje.ends_on ? String(viaje.ends_on).split('-') : [];
       return {
@@ -8520,7 +8525,7 @@ app.post('/api/notifications/:id/read', { preHandler: requireStaff }, async (req
 
 type ReminderCandidate = {
   user_id: string;
-  kind: 'session' | 'payment' | 'pending' | 'pause' | 'routine_expiring';
+  kind: 'session' | 'payment' | 'pending' | 'pause' | 'routine_expiring' | 'routine_cycle_prep';
   reference_id: string;
   role: AuthUser['role'];
   full_name: string;
@@ -8531,6 +8536,7 @@ type ReminderCandidate = {
   concept?: string;
   credit?: boolean;
   ends_on?: string;
+  prep?: RoutinePrepItem;
 };
 
 // Enviar una notificación de prueba al propio usuario. Existe porque hasta
@@ -8599,6 +8605,14 @@ async function candidatasRutinaPorVencer(ownerId?: string, hora?: number) {
       AND NOT EXISTS (SELECT 1 FROM notification_deliveries nd WHERE nd.user_id = u.id AND nd.kind = 'routine_expiring' AND nd.reference_id = o.id)`;
 }
 
+
+const fechaPrepTexto = (value: string) => `${value.slice(8, 10)}-${value.slice(5, 7)}-${value.slice(0, 4)}`;
+function routinePrepPayload(prep: RoutinePrepItem) {
+  const cut = fechaPrepTexto(prep.cutoffDate);
+  return prep.stage === 'DAY0'
+    ? { title: `${prep.clientName} empieza ciclo sin rutinas`, body: `Hoy (${cut}) empieza su nuevo ciclo y no tiene rutinas asignadas (cupo: ${prep.quota}). No verá nada hasta que le envíes las nuevas.`, url: new URL('/#clients', config.APP_URL).toString(), sound: true }
+    : { title: `Rutinas por enviar: ${prep.clientName}`, body: `Su nuevo ciclo empieza el ${cut} y tiene ${prep.assigned} de ${prep.quota} rutinas asignadas. Asígnalas con la fecha de inicio ${cut}.`, url: new URL('/#clients', config.APP_URL).toString() };
+}
 async function dispatchReminders() {
   if (!webPushReady) return;
   const [sessionRows, paymentRows, pauseRows] = await Promise.all([
@@ -8694,7 +8708,18 @@ async function dispatchReminders() {
   `;
 
   const routineRows = await candidatasRutinaPorVencer();
-  for (const reminder of [...pendingRows, ...sessionRows, ...paymentRows, ...pauseRows, ...routineRows]) {
+  // Aviso previo al corte de los clientes de rutinas (Entrega C): solo a la entrenadora, con push activo.
+  const prepOwners = await sql`
+    SELECT u.id::text AS id, u.role FROM users u JOIN notification_preferences np ON np.user_id = u.id
+    WHERE u.active = true AND u.role IN ('admin', 'trainer') AND np.browser_enabled = true
+      AND EXISTS (SELECT 1 FROM push_subscriptions ps WHERE ps.user_id = u.id AND ps.active = true)`;
+  const prepRows: ReminderCandidate[] = [];
+  for (const owner of prepOwners) {
+    for (const prep of await routineCyclePrep(fechaDeNegocioPanama(), String(owner.id))) {
+      prepRows.push({ user_id: String(owner.id), kind: 'routine_cycle_prep', reference_id: prep.referenceId, role: owner.role as AuthUser['role'], full_name: prep.clientName, prep });
+    }
+  }
+  for (const reminder of [...pendingRows, ...sessionRows, ...paymentRows, ...pauseRows, ...routineRows, ...prepRows]) {
     const [reserved] = await sql`
       INSERT INTO notification_deliveries (user_id, kind, reference_id)
       VALUES (${reminder.user_id}, ${reminder.kind}, ${reminder.reference_id})
@@ -8714,6 +8739,8 @@ async function dispatchReminders() {
           body: `Programada para ${new Date(reminder.starts_at!).toLocaleString('es-PA', { timeZone: 'America/Panama' })}.`,
           url: new URL(isClient ? '/#portal-calendar' : '/#calendar', config.APP_URL).toString()
         }
+      : reminder.kind === 'routine_cycle_prep'
+      ? routinePrepPayload(reminder.prep!)
       : reminder.kind === 'routine_expiring'
       ? {
           title: 'Tu rutina vence esta noche',
@@ -10587,6 +10614,13 @@ app.get('/api/maintenance/rutinas-por-vencer', { preHandler: requireStaff }, asy
   const { hora } = z.object({ hora: z.coerce.number().int().min(0).max(23).optional() }).parse(request.query);
   const filas = await candidatasRutinaPorVencer(auth.sub, hora);
   return { aviso_desde_las: HORA_AVISO_RUTINA_POR_VENCER, candidatas: filas.map(fila => ({ cliente: fila.full_name, rutina: fila.concept, a_credito: Boolean(fila.credit) })) };
+});
+// Solo lectura: qué clientes de rutinas tienen pendiente enviar el ciclo nuevo (hoy, o la fecha indicada). El envío real lo hace dispatchReminders.
+app.get('/api/maintenance/rutinas-por-enviar', { preHandler: requireStaff }, async request => {
+  const auth = request.user as AuthUser;
+  const { hoy } = z.object({ hoy: z.string().date().optional() }).parse(request.query);
+  const filas = await routineCyclePrep(hoy ?? fechaDeNegocioPanama(), auth.sub);
+  return { hoy: hoy ?? fechaDeNegocioPanama(), candidatas: filas.map(fila => ({ cliente: fila.clientName, etapa: fila.stage, corte: fila.cutoffDate, asignadas: fila.assigned, cupo: fila.quota })) };
 });
 const primeraVigilanciaRutinas = setTimeout(() => vigilarClasesSinCumplir().catch(error => app.log.error(error)), 30_000);
 const vigilanciaRutinas = setInterval(() => vigilarClasesSinCumplir().catch(error => app.log.error(error)), 15 * 60_000);

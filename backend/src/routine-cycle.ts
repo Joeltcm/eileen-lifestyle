@@ -6,6 +6,8 @@
  * que una rutina con corte 31 se comporte distinto en febrero, en el portal y
  * en el expediente.
  */
+import { createHash } from 'node:crypto';
+
 export type RoutineCycle = {
   cycleStart: string;
   cycleEnd: string;
@@ -70,4 +72,12 @@ export function routineCycle(input: RoutineCycleInput, reference: string | Date)
   const configuredQuota = input.monthlyTarget ?? input.planRoutinesPerMonth ?? null;
   const quota = configuredQuota == null || Number(configuredQuota) <= 0 ? null : Number(configuredQuota);
   return { cycleStart: period.inicio, cycleEnd: iso(end), nextCycleStart: period.vence, quota };
+}
+
+export type RoutinePrepStage = 'T2' | 'T1' | 'DAY0';
+
+/** Clave estable (uuid) por cliente, corte y etapa: sirve de reference_id en notification_deliveries. */
+export function routinePrepReference(clientId: string, cutoffDate: string, stage: RoutinePrepStage) {
+  const h = createHash('md5').update(`routine-prep:${clientId}:${cutoffDate}:${stage}`).digest('hex');
+  return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20, 32)}`;
 }
