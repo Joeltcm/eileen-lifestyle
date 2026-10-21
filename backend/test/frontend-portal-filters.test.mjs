@@ -56,6 +56,6 @@ test('los marcadores de versión del portal coinciden entre sí y no retroceden 
   assert.equal(/const VERSION = '(\d+)'/.exec(sw)[1], enApp);
   assert.equal(JSON.parse(version).version, enApp);
   const marcas = [...html.matchAll(/\?v=(\d+)/g)].map(match => match[1]);
-  assert.equal(marcas.length, 7);
+  assert.ok(marcas.length >= 7, 'index.html versiona sus hojas y scripts (se suman scripts nuevos, el número no se fija)');
   assert.ok(marcas.every(value => value === enApp));
 });

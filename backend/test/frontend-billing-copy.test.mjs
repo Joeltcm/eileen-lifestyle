@@ -17,5 +17,7 @@ test('los marcadores de la PWA publican una sola versión', async () => {
   const actual = /const APP_VERSION = '(\d+)'/.exec(app)[1];
   assert.match(sw, new RegExp(`const VERSION = '${actual}'`));
   assert.equal(JSON.parse(version).version, actual);
-  assert.deepEqual([...html.matchAll(/\?v=(\d+)/g)].map(match => match[1]), Array(7).fill(actual));
+  const marcas = [...html.matchAll(/\?v=(\d+)/g)].map(match => match[1]);
+  assert.ok(marcas.length >= 7, 'index.html versiona sus hojas y scripts');
+  assert.ok(marcas.every(value => value === actual), `todas las marcas ?v= valen ${actual}`);
 });
