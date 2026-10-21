@@ -2,8 +2,6 @@
 -- Las filas existentes siguen siendo la ejecución 1; no se reconstruye ni se
 -- altera su actividad histórica. `completed_at` sólo se escribe en cierres
 -- nuevos por el servidor y assignment_id conserva la asignación efectiva.
-BEGIN;
-
 ALTER TABLE routine_completions
   ADD COLUMN IF NOT EXISTS run_number smallint NOT NULL DEFAULT 1,
   ADD COLUMN IF NOT EXISTS completed_at timestamptz,
@@ -48,5 +46,3 @@ CREATE INDEX IF NOT EXISTS routine_completions_client_day_run_idx
   ON routine_completions(client_id, completed_on DESC, run_number DESC);
 CREATE INDEX IF NOT EXISTS routine_timer_sessions_client_day_run_idx
   ON routine_timer_sessions(client_id, completed_on DESC, run_number DESC);
-
-COMMIT;

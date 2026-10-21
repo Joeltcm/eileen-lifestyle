@@ -11,9 +11,9 @@ let server; let api; let db; let ownerId; let sequence = 0;
 const panamaToday = () => new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Panama', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
 const exercise = name => ({ name, sets: 2, reps: '10' });
 
-async function routineClient(label, routinesPerMonth = 1) {
+async function routineClient(label, routinesPerMonth = 1, serviceType = 'rutinas') {
   sequence += 1;
-  const [plan] = await db`INSERT INTO service_plans (owner_id, name, billing_model, price, sessions_included, service_type, routines_per_month, active) VALUES (${ownerId}, ${`Rutinas ejecución ${label} ${sequence}`}, 'monthly', 0, NULL, 'rutinas', ${routinesPerMonth}, true) RETURNING id`;
+  const [plan] = await db`INSERT INTO service_plans (owner_id, name, billing_model, price, sessions_included, service_type, routines_per_month, active) VALUES (${ownerId}, ${`Rutinas ejecución ${label} ${sequence}`}, 'monthly', 0, NULL, ${serviceType}, ${routinesPerMonth}, true) RETURNING id`;
   const client = await api.post('/api/clients', { fullName: `Cliente ejecución ${label} ${sequence}`, email: `ejecucion-${label}-${sequence}@prueba.test`, cutoffDay: 1, planId: plan.id });
   assert.equal(client.estado, 201, JSON.stringify(client.datos));
   return client.datos.id;
@@ -28,8 +28,8 @@ async function portalFor(clientId) {
   return portal;
 }
 
-async function createRoutine(label, routinesPerMonth = 1) {
-  const clientId = await routineClient(label, routinesPerMonth);
+async function createRoutine(label, routinesPerMonth = 1, serviceType = 'rutinas') {
+  const clientId = await routineClient(label, routinesPerMonth, serviceType);
   const routine = await api.post('/api/routines', { title: `Rutina ${label}`, sessionsPerWeek: 2, clientId, startsOn: panamaToday(), exercises: [exercise('Sentadilla'), exercise('Remo')] });
   assert.equal(routine.estado, 201, JSON.stringify(routine.datos));
   return { clientId, routine: routine.datos, portal: await portalFor(clientId) };
@@ -131,4 +131,18 @@ test('A2-6) la reversa 073 se niega a fusionar ejecuciones reales sin una orden 
     promisify(execFile)('psql', ['-v', 'ON_ERROR_STOP=1', '-q', server.databaseUrl, '-f', archivo]),
     /billing\.allow_destructive_down|orden expresa/i
   );
+});
+
+test('A2-7) un cliente mensual conserva una única ejecución por rutina y día, aunque envíe runNumber', async () => {
+  const { clientId, routine, portal } = await createRoutine('mensual', 1, 'presencial');
+  const day = panamaToday();
+  const first = await portal.post('/api/portal/routine-completions', { routineId: routine.id, completedOn: day, runNumber: 1, completionPercent: 40, durationSeconds: 20 });
+  const second = await portal.post('/api/portal/routine-completions', { routineId: routine.id, completedOn: day, runNumber: 2, completionPercent: 100, durationSeconds: 40 });
+  assert.equal(first.estado, 201, JSON.stringify(first.datos));
+  assert.equal(second.estado, 201, JSON.stringify(second.datos));
+  const rows = await db`SELECT run_number, completion_percent FROM routine_completions WHERE client_id = ${clientId} AND routine_id = ${routine.id} AND completed_on = ${day}::date ORDER BY run_number`;
+  assert.deepEqual(rows.map(row => [Number(row.run_number), Number(row.completion_percent)]), [[1, 100]]);
+  const feedback = await portal.post('/api/portal/routine-feedback', { routineId: routine.id, completedOn: day, feedback: 'Una sola ejecución' });
+  assert.equal(feedback.estado, 200, JSON.stringify(feedback.datos));
+  assert.equal(Number(feedback.datos.run_number), 1);
 });
