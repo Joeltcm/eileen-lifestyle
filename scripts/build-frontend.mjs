@@ -21,7 +21,7 @@ if (process.env.SKIP_UI_GUARD === '1') {
 
 const root = resolve(import.meta.dirname, '..');
 const output = resolve(root, 'dist');
-const files = ['index.html', 'refresh.html', 'version.json', '_headers', 'styles.css', 'zoho-migration.css', 'exercise-catalog.js', 'video-compressor.js', 'app.js', 'zoho-migration.js', 'recurring-billing.js', 'sw.js', 'manifest.webmanifest', 'icon.svg', 'icon-maskable.svg', 'icon-192.png', 'icon-512.png', 'apple-touch-icon.png', 'favicon-32.png', 'favicon.ico'];
+const files = ['index.html', 'refresh.html', 'version.json', '_headers', 'styles.css', 'zoho-migration.css', 'exercise-catalog.js', 'video-compressor.js', 'app.js', 'zoho-migration.js', 'recurring-billing.js', 'cotizador.js', 'sw.js', 'manifest.webmanifest', 'icon.svg', 'icon-maskable.svg', 'icon-192.png', 'icon-512.png', 'apple-touch-icon.png', 'favicon-32.png', 'favicon.ico'];
 
 await rm(output, { recursive: true, force: true });
 await mkdir(output, { recursive: true });
