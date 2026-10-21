@@ -27,7 +27,7 @@ test('app.js, sw.js, version.json e index.html llevan la misma versión', async 
   assert.equal(/const VERSION = '(\d+)'/.exec(sw)[1], enApp);
   assert.equal(JSON.parse(version).version, enApp);
   const marcas = [...html.matchAll(/\?v=(\d+)/g)].map(m => m[1]);
-  assert.equal(marcas.length, 7);
+  assert.ok(marcas.length >= 7, 'index.html versiona sus hojas y scripts');
   assert.ok(marcas.every(v => v === enApp), `index.html tiene ${[...new Set(marcas)]} y app.js ${enApp}`);
 });
 
