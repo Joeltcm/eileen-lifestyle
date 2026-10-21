@@ -10190,7 +10190,10 @@ async function enlaceDeRutina(token: string) {
   if (fila.revoked_at) return { estado: 'revocado' as const };
   if (new Date(fila.expires_at as string).getTime() <= Date.now()) return { estado: 'expirado' as const };
   const today = fechaDeNegocioPanama();
-  if (!fila.assignment_starts_on) return { estado: 'sin_asignacion' as const };
+  // El vencimiento de la asignación gobierna los enlaces de planes de rutinas.
+  // Los enlaces de mensualidad, demo o viaje conservan su vigencia propia aunque
+  // la asignación original se haya reemplazado por una versión nueva.
+  if (fila.service_type === 'rutinas' && !fila.assignment_starts_on) return { estado: 'sin_asignacion' as const };
   if (fila.service_type === 'rutinas' && fechaDbTexto(fila.assignment_starts_on)! > today) return { estado: 'pendiente' as const };
   if (fila.service_type === 'rutinas' && !routineAssignmentIsAvailable(fila as Record<string, unknown>)) return { estado: 'expirado' as const };
   return { estado: 'ok' as const, fila };

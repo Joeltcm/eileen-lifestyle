@@ -179,6 +179,19 @@ test('A8) el enlace distingue una asignación retirada de una rutina cuyo inicio
   assert.equal(pending.estado, 410); assert.match(pending.datos.error, /todavía no está disponible/i);
 });
 
+test('A8b) un enlace vigente de cliente que no es de rutinas sigue abriendo aunque su asignación ya no esté activa', async () => {
+  const client = await api.post('/api/clients', { fullName: 'Cliente mensual con enlace', email: 'enlace-mensual@prueba.test', cutoffDay: 15 });
+  assert.equal(client.estado, 201, JSON.stringify(client.datos));
+  const routine = await api.post('/api/routines', { title: 'Enlace mensual', sessionsPerWeek: 1, clientId: client.datos.id, exercises: [exercise('Remo')] });
+  assert.equal(routine.estado, 201, JSON.stringify(routine.datos));
+  const shared = await api.post(`/api/routines/${routine.datos.id}/share-links`, { clientId: client.datos.id, hours: 24 });
+  assert.equal(shared.estado, 201, JSON.stringify(shared.datos));
+  await db`UPDATE routine_assignments SET active = false WHERE routine_id = ${routine.datos.id}`;
+  const publicLink = await cliente(server.base).get(`/api/public/routine/${linkToken(shared.datos.url)}`);
+  assert.equal(publicLink.estado, 200, JSON.stringify(publicLink.datos));
+  assert.equal(publicLink.datos.routine.title, 'Enlace mensual');
+});
+
 test('A9) el historial normal conserva sus períodos por corte, incluido febrero para corte 31', async () => {
   assert.deepEqual(routineCutoffPeriodOffset('2030-02-28', 15, 0), { inicio: '2030-02-15', vence: '2030-03-15' });
   assert.deepEqual(routineCutoffPeriodOffset('2030-02-28', 31, 0), { inicio: '2030-02-28', vence: '2030-03-31' });
