@@ -24,6 +24,7 @@ import { DEFAULT_IMPORT_MANIFEST, applyBatch, approveBatch, createPreviewBatch, 
 import { exercisesHash, sameExerciseSet, routineSummaryText, type RoutineExerciseForSummary } from './routine-utils.js';
 import { CANCELLATION_NOTICE_HOURS, CONTRACT_TERMINATION_NOTICE_DAYS, RESCHEDULE_CHANGE_NOTICE_HOURS, RESCHEDULE_LATEST_END, contractTimestamp, contractTemplateVersion, normalizeContractName, renderContractTemplate, type ContractTemplateKey } from './contracts.js';
 import { validateSignaturePng, type SignatureStroke } from './contract-signatures.js';
+import { routineCutoffPeriodOffset, routineCycle } from './routine-cycle.js';
 
 type AuthUser = { sub: string; role: 'admin' | 'trainer' | 'client'; email: string };
 const app = Fastify({ logger: true, trustProxy: true });
@@ -4133,7 +4134,7 @@ const routineExerciseSchema = z.object({
   // Bloques o circuitos (J-113): el número de bloque y cuántas rondas se repite; sin ellos, el ejercicio va suelto con sus series.
   block: z.coerce.number().int().min(1).max(20).optional(), rounds: z.coerce.number().int().min(1).max(10).optional()
 });
-const routineSchema = z.object({ title: z.string().min(2), description: z.string().optional(), sessionsPerWeek: z.coerce.number().int().min(1).max(7), exercises: z.array(routineExerciseSchema).max(80).default([]), clientId: z.string().uuid().optional(), dueOn: z.string().date().nullable().optional(), confirmRepeat: z.boolean().optional().default(false), confirmVersion: z.boolean().optional().default(false) });
+const routineSchema = z.object({ title: z.string().min(2), description: z.string().optional(), sessionsPerWeek: z.coerce.number().int().min(1).max(7), exercises: z.array(routineExerciseSchema).max(80).default([]), clientId: z.string().uuid().optional(), startsOn: z.string().date().nullable().optional(), dueOn: z.string().date().nullable().optional(), confirmRepeat: z.boolean().optional().default(false), confirmQuota: z.boolean().optional().default(false), confirmVersion: z.boolean().optional().default(false) });
 
 type RoutineDeliveryKind = 'assignment' | 'link' | 'offer' | 'travel_link' | 'new_version';
 type RoutineDeliveryRoutine = {
@@ -4165,6 +4166,52 @@ class RoutineRepeatError extends Error {
     super('Esta clienta recibió una rutina igual o de la misma serie hace menos de 30 días.');
     this.repeats = repeats;
   }
+}
+
+class RoutineQuotaError extends Error {
+  code = 'quota_reached';
+  constructor(readonly quota: number, readonly assigned: number, readonly cycleStart: string, readonly cycleEnd: string) {
+    super(`Este cliente ya tiene ${assigned} de ${quota} rutinas asignadas para este ciclo.`);
+  }
+}
+
+type RoutineAssignmentDates = { startsOn: string; dueOn: string | null; dueOnAdjusted: boolean; cycle: ReturnType<typeof routineCycle> | null };
+
+/**
+ * Applies the only date policy for routine-plan clients.  A due date after the
+ * cycle does not make a routine disappear arbitrarily: it is brought back to
+ * the cycle end and reported to the editor in the response.
+ */
+async function routineAssignmentDates(transaction: TransactionSql, ownerId: string, clientId: string, startsOn: string | null | undefined, dueOn: string | null | undefined): Promise<RoutineAssignmentDates> {
+  const [client] = await transaction`
+    SELECT c.id, c.billing_cutoff_day, c.monthly_session_target, p.service_type, p.routines_per_month
+    FROM clients c LEFT JOIN service_plans p ON p.id = c.plan_id
+    WHERE c.id = ${clientId} AND c.owner_id = ${ownerId}
+  `;
+  if (!client) throw new Error('Cliente no encontrado');
+  const start = startsOn || fechaDeNegocioPanama();
+  if (client.service_type !== 'rutinas') return { startsOn: start, dueOn: dueOn ?? null, dueOnAdjusted: false, cycle: null };
+  const cycle = routineCycle({
+    cutoffDay: Number(client.billing_cutoff_day) || 1,
+    monthlyTarget: client.monthly_session_target == null ? null : Number(client.monthly_session_target),
+    planRoutinesPerMonth: client.routines_per_month == null ? null : Number(client.routines_per_month)
+  }, start);
+  if (dueOn && dueOn < start) throw new Error('La fecha límite no puede ser anterior al inicio de la rutina.');
+  const dueOnAdjusted = Boolean(dueOn && dueOn > cycle.cycleEnd);
+  return { startsOn: start, dueOn: dueOnAdjusted ? cycle.cycleEnd : (dueOn || cycle.cycleEnd), dueOnAdjusted, cycle };
+}
+
+async function enforceRoutineQuota(transaction: TransactionSql, ownerId: string, clientId: string, routineId: string, dates: RoutineAssignmentDates, confirmQuota: boolean | undefined) {
+  if (!dates.cycle?.quota) return;
+  const [count] = await transaction`
+    SELECT count(DISTINCT COALESCE(r.root_routine_id, r.id))::int AS assigned
+    FROM routine_assignments ra JOIN routines r ON r.id = ra.routine_id
+    WHERE ra.client_id = ${clientId} AND ra.active = true
+      AND ra.starts_on >= ${dates.cycle.cycleStart}::date AND ra.starts_on <= ${dates.cycle.cycleEnd}::date
+      AND COALESCE(r.root_routine_id, r.id) <> COALESCE((SELECT root_routine_id FROM routines WHERE id = ${routineId}), ${routineId}::uuid)
+  `;
+  const assigned = Number(count?.assigned || 0);
+  if (assigned >= dates.cycle.quota && !confirmQuota) throw new RoutineQuotaError(dates.cycle.quota, assigned, dates.cycle.cycleStart, dates.cycle.cycleEnd);
 }
 
 // Un enlace, una oferta o un enlace de viaje de una rutina que ESA clienta ya tiene asignada y vigente no es "repetir" la rutina: es otra vía para entregarle la que ya tiene
@@ -4258,6 +4305,7 @@ app.get('/api/routines', { preHandler: requireStaff }, async request => {
   const incluirArchivadas = consulta.archived === 'true' || Boolean(consulta.root);
   return sql`
     SELECT r.*, COALESCE(array_agg(ra.client_id) FILTER (WHERE ra.active), '{}') AS assigned_client_ids,
+      COALESCE(max(ra.starts_on) FILTER (WHERE ra.active), max(ra.starts_on)) AS starts_on,
       COALESCE(max(ra.due_on) FILTER (WHERE ra.active), max(ra.due_on)) AS due_on,
       (SELECT count(*)::int FROM routine_deliveries d WHERE d.owner_id = r.owner_id AND d.routine_id = r.id) AS deliveries_count,
       (SELECT count(DISTINCT d.client_id)::int FROM routine_deliveries d WHERE d.owner_id = r.owner_id AND d.routine_id = r.id) AS delivery_clients_count,
@@ -4490,14 +4538,18 @@ app.post('/api/routines', { preHandler: requireStaff }, async (request, reply) =
       const [created] = await transaction`INSERT INTO routines (id, owner_id, root_routine_id, title, description, sessions_per_week, exercises, exercises_hash) VALUES (${routineId}, ${auth.sub}, ${routineId}, ${input.title}, ${input.description || null}, ${input.sessionsPerWeek}, ${transaction.json(input.exercises)}, ${exercisesHash(input.exercises)}) RETURNING *`;
       if (input.clientId) {
         await assertDemoCanReceiveRoutine(transaction, input.clientId, created.id);
+        const dates = await routineAssignmentDates(transaction, auth.sub, input.clientId, input.startsOn, input.dueOn);
+        await enforceRoutineQuota(transaction, auth.sub, input.clientId, created.id, dates, input.confirmQuota);
         const repeticionConfirmada = await rejectRecentRoutineRepeat(transaction, created as unknown as RoutineDeliveryRoutine, input.clientId, input.confirmRepeat, 'assignment');
-        const [assignment] = await transaction`INSERT INTO routine_assignments (routine_id, client_id, due_on) SELECT ${created.id}, id, ${input.dueOn ?? null}::date FROM clients WHERE id = ${input.clientId} AND owner_id = ${auth.sub} RETURNING *`;
+        const [assignment] = await transaction`INSERT INTO routine_assignments (routine_id, client_id, starts_on, due_on) SELECT ${created.id}, id, ${dates.startsOn}::date, ${dates.dueOn}::date FROM clients WHERE id = ${input.clientId} AND owner_id = ${auth.sub} RETURNING *`;
         if (assignment) await recordRoutineDelivery(transaction, { routine: created as unknown as RoutineDeliveryRoutine, clientId: assignment.client_id, kind: 'assignment', sentByUserId: auth.sub, dueOn: assignment.due_on, assignmentId: assignment.id, repeatConfirmed: repeticionConfirmada });
+        Object.assign(created, { assignment_due_on_adjusted: dates.dueOnAdjusted, assignment_cycle: dates.cycle });
       }
       return created;
     });
   } catch (error) {
     if (error instanceof RoutineRepeatError) return reply.code(409).send({ code: error.code, message: error.message, repeats: error.repeats });
+    if (error instanceof RoutineQuotaError) return reply.code(409).send({ code: error.code, message: error.message, quota: error.quota, assigned: error.assigned, cycleStart: error.cycleStart, cycleEnd: error.cycleEnd });
     throw error;
   }
   return reply.code(201).send(routine);
@@ -4585,12 +4637,14 @@ app.patch('/api/routines/:id', { preHandler: requireStaff }, async (request, rep
         `;
         await transaction`UPDATE routine_assignments SET active = false, ends_on = (now() AT TIME ZONE 'America/Panama')::date WHERE routine_id = ${id} AND active = true`;
         for (const asignacion of asignaciones) {
-          const dueOn = input.dueOn === undefined
+          const originalDueOn = input.dueOn === undefined
             ? (asignacion.due_on ? new Date(asignacion.due_on).toISOString().slice(0, 10) : null)
             : input.dueOn;
+          const startsOn = new Date(asignacion.starts_on).toISOString().slice(0, 10);
+          const dates = await routineAssignmentDates(transaction, auth.sub, String(asignacion.client_id), startsOn, originalDueOn);
           const [nuevaAsignacion] = await transaction`
             INSERT INTO routine_assignments (routine_id, client_id, starts_on, due_on, active)
-            VALUES (${newId}, ${asignacion.client_id}, ${asignacion.starts_on}, ${dueOn}::date, true)
+            VALUES (${newId}, ${asignacion.client_id}, ${dates.startsOn}::date, ${dates.dueOn}::date, true)
             RETURNING *
           `;
           await recordRoutineDelivery(transaction, { routine: versionada as unknown as RoutineDeliveryRoutine, clientId: nuevaAsignacion.client_id, kind: 'new_version', sentByUserId: auth.sub, dueOn: nuevaAsignacion.due_on, assignmentId: nuevaAsignacion.id });
@@ -4607,20 +4661,29 @@ app.patch('/api/routines/:id', { preHandler: requireStaff }, async (request, rep
       // Si sólo se editan los ejercicios, clientId viene omitido y la asignación
       // actual debe permanecer intacta. La fecha sí puede cambiarse, pero sólo
       // en asignaciones activas de esta rutina y dentro de la transacción.
-      if (input.clientId === undefined && input.dueOn !== undefined) {
-        const activas = await transaction`SELECT ra.id FROM routine_assignments ra WHERE ra.routine_id = ${id} AND ra.active = true FOR UPDATE`;
+      if (input.clientId === undefined && (input.dueOn !== undefined || input.startsOn !== undefined)) {
+        const activas = await transaction`SELECT ra.id, ra.client_id, ra.starts_on FROM routine_assignments ra WHERE ra.routine_id = ${id} AND ra.active = true FOR UPDATE`;
         if (!activas.length) throw new RoutineDueDateError('Asigna la rutina a un cliente antes de ponerle fecha');
-        await transaction`UPDATE routine_assignments SET due_on = ${input.dueOn}::date WHERE routine_id = ${id} AND active = true`;
+        for (const assignment of activas) {
+          const existingStart = new Date(assignment.starts_on).toISOString().slice(0, 10);
+          const [existingDue] = await transaction`SELECT due_on FROM routine_assignments WHERE id = ${assignment.id}`;
+          const dates = await routineAssignmentDates(transaction, auth.sub, String(assignment.client_id), input.startsOn === undefined ? existingStart : input.startsOn, input.dueOn === undefined ? (existingDue.due_on ? new Date(existingDue.due_on).toISOString().slice(0, 10) : null) : input.dueOn);
+          await transaction`UPDATE routine_assignments SET starts_on = ${dates.startsOn}::date, due_on = ${dates.dueOn}::date WHERE id = ${assignment.id}`;
+          if (dates.dueOnAdjusted) Object.assign(updated, { assignment_due_on_adjusted: true, assignment_cycle: dates.cycle });
+        }
       }
       // Sólo se reemplaza la asignación cuando la petición declara explícitamente
       // otra. En ese flujo la fecha sigue viajando con la asignación nueva.
       if (input.clientId !== undefined) {
         if (input.clientId) {
           await assertDemoCanReceiveRoutine(transaction, input.clientId, id);
+          const dates = await routineAssignmentDates(transaction, auth.sub, input.clientId, input.startsOn, input.dueOn);
+          await enforceRoutineQuota(transaction, auth.sub, input.clientId, id, dates, input.confirmQuota);
           const repeticionConfirmada = await rejectRecentRoutineRepeat(transaction, updated as unknown as RoutineDeliveryRoutine, input.clientId, input.confirmRepeat, 'assignment');
           await transaction`UPDATE routine_assignments SET active = false, ends_on = current_date WHERE routine_id = ${id} AND active = true`;
-          const [assignment] = await transaction`INSERT INTO routine_assignments (routine_id, client_id, due_on) SELECT ${id}, c.id, ${input.dueOn ?? null}::date FROM clients c WHERE c.id = ${input.clientId} AND c.owner_id = ${auth.sub} ON CONFLICT (routine_id, client_id, starts_on) DO UPDATE SET active = true, ends_on = null, due_on = EXCLUDED.due_on RETURNING *`;
+          const [assignment] = await transaction`INSERT INTO routine_assignments (routine_id, client_id, starts_on, due_on) SELECT ${id}, c.id, ${dates.startsOn}::date, ${dates.dueOn}::date FROM clients c WHERE c.id = ${input.clientId} AND c.owner_id = ${auth.sub} ON CONFLICT (routine_id, client_id, starts_on) DO UPDATE SET active = true, ends_on = null, due_on = EXCLUDED.due_on RETURNING *`;
           if (assignment) await recordRoutineDelivery(transaction, { routine: updated as unknown as RoutineDeliveryRoutine, clientId: assignment.client_id, kind: 'assignment', sentByUserId: auth.sub, dueOn: assignment.due_on, assignmentId: assignment.id, repeatConfirmed: repeticionConfirmada });
+          Object.assign(updated, { assignment_due_on_adjusted: dates.dueOnAdjusted, assignment_cycle: dates.cycle });
         } else {
           await transaction`UPDATE routine_assignments SET active = false, ends_on = current_date WHERE routine_id = ${id} AND active = true`;
         }
@@ -4632,6 +4695,7 @@ app.patch('/api/routines/:id', { preHandler: requireStaff }, async (request, rep
     if (error instanceof RoutineVersionRequiredError) return reply.code(409).send({ code: error.code, message: error.message, clientCount: error.clientCount });
     if (error instanceof RoutineVersionStartedError) return reply.code(409).send({ code: error.code, message: error.message });
     if (error instanceof RoutineRepeatError) return reply.code(409).send({ code: error.code, message: error.message, repeats: error.repeats });
+    if (error instanceof RoutineQuotaError) return reply.code(409).send({ code: error.code, message: error.message, quota: error.quota, assigned: error.assigned, cycleStart: error.cycleStart, cycleEnd: error.cycleEnd });
     throw error;
   }
   if (!routine) return reply.code(404).send({ error: 'Rutina no encontrada' });
@@ -8753,7 +8817,12 @@ app.get('/api/portal/summary', { preHandler: requireAuth }, async (request, repl
         END::numeric(12,2) AS balance
       FROM invoices WHERE client_id = ${client.id} ORDER BY COALESCE(issued_on, due_on) DESC
     `,
-    sql`SELECT ra.id AS assignment_id, ra.due_on, r.id, r.title, r.description, r.version, r.root_routine_id, r.sessions_per_week, r.exercises FROM routine_assignments ra JOIN routines r ON r.id = ra.routine_id WHERE ra.client_id = ${client.id} AND ra.active = true AND r.archived_at IS NULL AND (ra.ends_on IS NULL OR ra.ends_on >= current_date) ORDER BY ra.starts_on DESC`,
+    sql`SELECT ra.id AS assignment_id, ra.starts_on, ra.due_on, r.id, r.title, r.description, r.version, r.root_routine_id, r.sessions_per_week, r.exercises
+      FROM routine_assignments ra JOIN routines r ON r.id = ra.routine_id
+      WHERE ra.client_id = ${client.id} AND ra.active = true AND r.archived_at IS NULL
+        AND (ra.ends_on IS NULL OR ra.ends_on >= (now() AT TIME ZONE 'America/Panama')::date)
+        AND (${client.service_type} <> 'rutinas' OR (ra.starts_on <= (now() AT TIME ZONE 'America/Panama')::date AND (ra.due_on IS NULL OR ra.due_on >= (now() AT TIME ZONE 'America/Panama')::date)))
+      ORDER BY ra.starts_on DESC`,
     sql`SELECT s.id, s.routine_id, s.starts_at, s.duration_minutes, s.mode, s.status, s.cancellation_kind, s.cancelled_by, s.credit_charge, s.completion_percent,
       r.title AS routine_title,
       (EXISTS (SELECT 1 FROM session_reschedules sr WHERE sr.session_id = s.id AND sr.origin = 'moved')
@@ -8981,7 +9050,9 @@ const routineHistoryQuerySchema = z.object({
 });
 
 function routineHistoryRange(clientCutoffDay: number, query: z.infer<typeof routineHistoryQuerySchema>) {
-  if (query.cutOffset !== undefined) return cicloDelCorteDesplazado(new Date(), clientCutoffDay, Math.abs(query.cutOffset));
+  // La vista de historial y las asignaciones de rutinas usan la misma regla de
+  // corte. Así un 31 de febrero (28/29) no produce un período distinto aquí.
+  if (query.cutOffset !== undefined) return routineCutoffPeriodOffset(new Date(), clientCutoffDay, Math.abs(query.cutOffset));
   if (query.month) {
     const [year, month] = query.month.split('-').map(Number);
     const last = new Date(Date.UTC(year, month, 0)).getUTCDate();
@@ -9084,7 +9155,10 @@ const routineCompletionSchema = z.object({ routineId: z.string().uuid(), complet
 app.post('/api/portal/routine-completions', { preHandler: requireAuth }, async (request, reply) => {
   const auth = request.user as AuthUser; if (auth.role !== 'client') return reply.code(403).send({ error: 'Acceso exclusivo para clientes' });
   const input = routineCompletionSchema.parse(request.body); const client = await portalClient(auth.sub); if (!client) return reply.code(404).send({ error: 'Portal de cliente no encontrado' });
-  const [assignment] = await sql`SELECT id FROM routine_assignments WHERE routine_id = ${input.routineId} AND client_id = ${client.id} AND active = true`;
+  const [assignment] = await sql`
+    SELECT ra.id FROM routine_assignments ra JOIN clients c ON c.id = ra.client_id LEFT JOIN service_plans p ON p.id = c.plan_id
+    WHERE ra.routine_id = ${input.routineId} AND ra.client_id = ${client.id} AND ra.active = true
+      AND (p.service_type IS DISTINCT FROM 'rutinas' OR (ra.starts_on <= (now() AT TIME ZONE 'America/Panama')::date AND (ra.due_on IS NULL OR ra.due_on >= (now() AT TIME ZONE 'America/Panama')::date)))`;
   if (!assignment) return reply.code(404).send({ error: 'La rutina no está asignada a este cliente' });
   const [completion] = await sql`
     INSERT INTO routine_completions (routine_id, client_id, completed_on, completion_percent, marked_by_user_id, notes, duration_seconds)
@@ -9139,7 +9213,7 @@ async function notifyRoutineActivity(input: {
 app.post('/api/portal/routine-activity', { preHandler: requireAuth }, async (request, reply) => {
   const auth = request.user as AuthUser; if (auth.role !== 'client') return reply.code(403).send({ error: 'Acceso exclusivo para clientes' });
   const input = routineActivitySchema.parse(request.body); const client = await portalClient(auth.sub); if (!client) return reply.code(404).send({ error: 'Portal de cliente no encontrado' });
-  const [routine] = await sql`SELECT r.title, c.id AS client_id, c.full_name, c.owner_id, c.service_mode FROM routine_assignments ra JOIN routines r ON r.id = ra.routine_id JOIN clients c ON c.id = ra.client_id WHERE ra.routine_id = ${input.routineId} AND ra.client_id = ${client.id} AND ra.active = true AND (ra.ends_on IS NULL OR ra.ends_on >= current_date)`;
+  const [routine] = await sql`SELECT r.title, c.id AS client_id, c.full_name, c.owner_id, c.service_mode FROM routine_assignments ra JOIN routines r ON r.id = ra.routine_id JOIN clients c ON c.id = ra.client_id LEFT JOIN service_plans p ON p.id = c.plan_id WHERE ra.routine_id = ${input.routineId} AND ra.client_id = ${client.id} AND ra.active = true AND (ra.ends_on IS NULL OR ra.ends_on >= (now() AT TIME ZONE 'America/Panama')::date) AND (p.service_type IS DISTINCT FROM 'rutinas' OR (ra.starts_on <= (now() AT TIME ZONE 'America/Panama')::date AND (ra.due_on IS NULL OR ra.due_on >= (now() AT TIME ZONE 'America/Panama')::date)))`;
   if (!routine) return reply.code(404).send({ error: 'La rutina no está asignada a este cliente' });
   await sql.begin(async transaction => {
     if (input.kind === 'started') await transaction`INSERT INTO routine_timer_sessions (routine_id, client_id, completed_on, started_at, elapsed_seconds, active) VALUES (${input.routineId}, ${client.id}, ${input.completedOn}, now(), ${input.elapsedSeconds}, true) ON CONFLICT (routine_id, client_id, completed_on) DO UPDATE SET active = true, paused_at = null, elapsed_seconds = GREATEST(routine_timer_sessions.elapsed_seconds, EXCLUDED.elapsed_seconds), updated_at = now()`;
@@ -9155,7 +9229,7 @@ app.post('/api/portal/routine-exercise-completions', { preHandler: requireAuth }
   const input = routineExerciseCompletionSchema.parse(request.body); const client = await portalClient(auth.sub); if (!client) return reply.code(404).send({ error: 'Portal de cliente no encontrado' });
   if (input.completed || input.completeAll) { const [timer] = await sql`SELECT id FROM routine_timer_sessions WHERE routine_id = ${input.routineId} AND client_id = ${client.id} AND completed_on = ${input.completedOn}`; if (!timer) return reply.code(409).send({ error: 'Inicia el cronómetro antes de marcar o completar ejercicios' }); }
   const result = await sql.begin(async transaction => {
-    const [routine] = await transaction`SELECT r.exercises FROM routine_assignments ra JOIN routines r ON r.id = ra.routine_id WHERE ra.routine_id = ${input.routineId} AND ra.client_id = ${client.id} AND ra.active = true AND (ra.ends_on IS NULL OR ra.ends_on >= current_date) FOR UPDATE OF ra`;
+    const [routine] = await transaction`SELECT r.exercises FROM routine_assignments ra JOIN routines r ON r.id = ra.routine_id JOIN clients c ON c.id = ra.client_id LEFT JOIN service_plans p ON p.id = c.plan_id WHERE ra.routine_id = ${input.routineId} AND ra.client_id = ${client.id} AND ra.active = true AND (ra.ends_on IS NULL OR ra.ends_on >= (now() AT TIME ZONE 'America/Panama')::date) AND (p.service_type IS DISTINCT FROM 'rutinas' OR (ra.starts_on <= (now() AT TIME ZONE 'America/Panama')::date AND (ra.due_on IS NULL OR ra.due_on >= (now() AT TIME ZONE 'America/Panama')::date))) FOR UPDATE OF ra`;
     if (!routine) return null;
     const ejercicios = Array.isArray(routine.exercises) ? routine.exercises : [];
     if (!ejercicios.length) throw new Error('Esta rutina no tiene ejercicios para marcar');
@@ -10003,7 +10077,7 @@ app.post('/api/routines/:id/share-links', { preHandler: requireStaff }, async (r
   const id = z.string().uuid().parse((request.params as { id: string }).id);
   const input = enlaceSchema.parse(request.body);
   const [rutina] = await sql`
-    SELECT r.id, r.owner_id, r.title, r.version, r.root_routine_id, r.exercises_hash, ra.due_on, r.sessions_per_week, r.exercises FROM routines r JOIN routine_assignments ra ON ra.routine_id = r.id AND ra.active = true AND ra.client_id = ${input.clientId}
+    SELECT r.id, r.owner_id, r.title, r.version, r.root_routine_id, r.exercises_hash, ra.starts_on, ra.due_on, r.sessions_per_week, r.exercises FROM routines r JOIN routine_assignments ra ON ra.routine_id = r.id AND ra.active = true AND ra.client_id = ${input.clientId}
     WHERE r.id = ${id} AND r.owner_id = ${auth.sub}`;
   if (!rutina) return reply.code(409).send({ error: 'La rutina debe estar asignada a ese cliente.' });
   if (input.travelId) {
@@ -10076,15 +10150,20 @@ function demasiadasVisitas(request: { ip: string }) {
 async function enlaceDeRutina(token: string) {
   if (!/^[A-Za-z0-9_-]{30,80}$/.test(token)) return { estado: 'desconocido' as const };
   const [fila] = await sql`
-    SELECT l.*, r.title, r.description, r.exercises, c.full_name, c.owner_id AS client_owner_id, c.portal_user_id, c.status AS client_status, c.service_mode
-    FROM routine_share_links l JOIN routines r ON r.id = l.routine_id JOIN clients c ON c.id = l.client_id
+    SELECT l.*, r.title, r.description, r.exercises, c.full_name, c.owner_id AS client_owner_id, c.portal_user_id, c.status AS client_status, c.service_mode, p.service_type,
+      ra.starts_on AS assignment_starts_on, ra.due_on AS assignment_due_on
+    FROM routine_share_links l JOIN routines r ON r.id = l.routine_id JOIN clients c ON c.id = l.client_id LEFT JOIN service_plans p ON p.id = c.plan_id
+    LEFT JOIN LATERAL (SELECT starts_on, due_on FROM routine_assignments a WHERE a.routine_id = l.routine_id AND a.client_id = l.client_id AND a.active = true ORDER BY a.starts_on DESC LIMIT 1) ra ON true
     WHERE l.token_hash = ${hashToken(token)}`;
   if (!fila) return { estado: 'desconocido' as const };
   if (fila.revoked_at) return { estado: 'revocado' as const };
   if (new Date(fila.expires_at as string).getTime() <= Date.now()) return { estado: 'expirado' as const };
+  const today = fechaDeNegocioPanama();
+  if (fila.service_type === 'rutinas' && (!fila.assignment_starts_on || String(fila.assignment_starts_on).slice(0, 10) > today)) return { estado: 'pendiente' as const };
+  if (fila.service_type === 'rutinas' && fila.assignment_due_on && String(fila.assignment_due_on).slice(0, 10) < today) return { estado: 'expirado' as const };
   return { estado: 'ok' as const, fila };
 }
-const mensajeEnlace = { desconocido: 'Este enlace no existe.', revocado: 'Eileen retiró este enlace.', expirado: 'Este enlace ya venció. Pídele uno nuevo a Eileen.' };
+const mensajeEnlace = { desconocido: 'Este enlace no existe.', revocado: 'Eileen retiró este enlace.', expirado: 'Este enlace ya venció. Pídele uno nuevo a Eileen.', pendiente: 'Esta rutina todavía no está disponible. Vuelve a abrir el enlace en su fecha de inicio.' };
 
 // Ejercicios del catálogo que aparecen en la rutina (por id o por el slug antiguo), con la marca de si tienen video.
 async function ejerciciosDeLaRutina(ownerId: string, ejercicios: unknown) {
@@ -10188,10 +10267,10 @@ app.post('/api/public/routine/:token/complete', async (request, reply) => {
 async function cancelarComoPerdidaPorElCliente(sessionId: string, despues?: (transaction: typeof sql) => Promise<void>) {
   return sql.begin(async transaction => {
     const [actual] = await transaction`
-      SELECT s.*, c.payment_mode, c.service_mode, c.owner_id FROM sessions s JOIN clients c ON c.id = s.client_id
+      SELECT s.*, c.payment_mode, c.service_mode, c.owner_id, p.service_type FROM sessions s JOIN clients c ON c.id = s.client_id LEFT JOIN service_plans p ON p.id = c.plan_id
       WHERE s.id = ${sessionId} AND s.status = 'scheduled' FOR UPDATE`;
     if (!actual) return null;
-    if (actual.service_mode === 'demo') return null;
+    if (actual.service_mode === 'demo' || actual.service_type === 'rutinas') return null;
     const esCredito = actual.payment_mode === 'no_anticipado';
     await transaction`
       UPDATE sessions SET status = 'cancelled', cancellation_kind = 'not_rescheduled', cancelled_by = 'client',
@@ -10223,9 +10302,10 @@ async function darPorPerdidasClasesConRutinaVencida(ownerId?: string) {
     FROM session_routine_offers o
     JOIN sessions s ON s.id = o.session_id
     JOIN clients c ON c.id = s.client_id
+    LEFT JOIN service_plans p ON p.id = c.plan_id
     JOIN routines r ON r.id = o.routine_id
     WHERE o.origin = 'client' AND o.status = 'offered' AND s.status = 'scheduled'
-      AND c.service_mode <> 'demo'
+      AND c.service_mode <> 'demo' AND COALESCE(p.service_type, '') <> 'rutinas'
       AND (s.starts_at AT TIME ZONE 'America/Panama')::date < (now() AT TIME ZONE 'America/Panama')::date
       AND (${ownerId ?? null}::uuid IS NULL OR c.owner_id = ${ownerId ?? null}::uuid)`;
   let perdidas = 0;
@@ -10235,17 +10315,18 @@ async function darPorPerdidasClasesConRutinaVencida(ownerId?: string) {
         const [actual] = await transaction`
           SELECT o.id AS offer_id, o.routine_id, o.client_id, s.id AS session_id, s.starts_at,
             s.package_debited, s.status AS session_status, c.owner_id, c.full_name, c.payment_mode,
-            c.service_mode,
+            c.service_mode, p.service_type,
             COALESCE(c.credit_session_price, 25) AS credit_session_price, r.title AS routine_title
           FROM session_routine_offers o
           JOIN sessions s ON s.id = o.session_id
           JOIN clients c ON c.id = s.client_id
+          LEFT JOIN service_plans p ON p.id = c.plan_id
           JOIN routines r ON r.id = o.routine_id
           WHERE o.id = ${fila.offer_id} AND o.status = 'offered' AND s.status = 'scheduled'
           FOR UPDATE OF o, s
         `;
         if (!actual) return null;
-        if (actual.service_mode === 'demo') return null;
+        if (actual.service_mode === 'demo' || actual.service_type === 'rutinas') return null;
         const esCredito = actual.payment_mode === 'no_anticipado';
         let packageDebited = Boolean(actual.package_debited);
         let packageLabel: string | null = null;
