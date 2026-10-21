@@ -1,4 +1,4 @@
-const APP_VERSION = '318';
+const APP_VERSION = '319';
 const markPwaVersion = () => document.querySelectorAll('.topbar-actions').forEach(actions => {
   if (actions.querySelector('[data-pwa-version]')) return;
   const indicator = document.createElement('span');
@@ -4796,8 +4796,10 @@ function complianceReport(client = null) {
     <label>Período<select id="report-mode"><option value="cycle">Ciclo actual de cada cliente (por corte)</option><option value="range">Rango de fechas</option></select></label>
     <div id="report-range" class="form-row" hidden><label>Desde<input type="date" id="report-from" value="${hace30}" max="${hoy}" /></label><label>Hasta<input type="date" id="report-to" value="${hoy}" max="${hoy}" /></label></div>
     <button class="primary wide-button" id="report-run">Generar informe</button>
-    <div id="report-body"></div>`;
+    <div id="report-body"></div>
+    ${!client ? `<div class="routine-report-all"><p class="eyebrow" style="margin-top:22px">RUTINAS</p><p class="section-note">Ciclo actual de cada cliente con plan de rutinas: enviadas, hechas, repeticiones y cumplimiento.</p>${routineReportActions({})}</div>` : client.serviceType === 'rutinas' ? `<div class="routine-report-all"><p class="eyebrow" style="margin-top:22px">RUTINAS</p>${routineReportActions({ clientId: client.id })}</div>` : ''}`;
   openModal(box, true);
+  const bloqueRutinas = box.querySelector('.routine-report-all'); if (bloqueRutinas) bindRoutineReportActions(bloqueRutinas, { clientId: client?.id || null });
 
   const chips = document.getElementById('report-chips');
   const add = document.getElementById('report-add');
@@ -4975,13 +4977,31 @@ function routineEntitlementsSection(target, client) {
     });
   }).catch(error => { target.innerHTML = `<p class="empty">${escapeHtml(error.message || 'No se pudieron cargar las rutinas sueltas.')}</p>`; });
 }
+// Informes de cumplimiento de rutinas (PDF y CSV): las mismas cifras que la bitácora del ciclo (enviadas ≠ hechas, parciales y repeticiones cuentan).
+function routineReportActions({ clientId = null, portal = false } = {}) {
+  const porCiclos = clientId || portal;
+  return `<div class="routine-report-actions">${porCiclos ? '<label>Ciclos<select data-routine-report-cycles><option value="3">Últimos 3</option><option value="6" selected>Últimos 6</option><option value="12">Últimos 12</option></select></label>' : ''}<button type="button" class="secondary" data-routine-report="pdf">Informe PDF</button>${portal ? '' : '<button type="button" class="secondary" data-routine-report="csv">CSV por ciclo</button>'}${clientId ? '<button type="button" class="secondary" data-routine-report="detail">CSV con detalle</button>' : ''}</div>`;
+}
+function bindRoutineReportActions(root, { clientId = null, portal = false } = {}) {
+  root.querySelectorAll('[data-routine-report]').forEach(button => button.onclick = async () => {
+    const kind = button.dataset.routineReport; const cycles = root.querySelector('[data-routine-report-cycles]')?.value || '6';
+    const base = portal ? '/api/portal/reports/routine-compliance' : '/api/reports/routine-compliance';
+    const params = new URLSearchParams(); if (clientId && !portal) params.set('clientId', clientId); if (clientId || portal) params.set('cycles', cycles); if (kind === 'detail') params.set('detail', '1');
+    const extension = kind === 'pdf' ? 'pdf' : 'csv'; const texto = button.textContent;
+    button.disabled = true; button.textContent = 'Preparando…';
+    try { downloadBlob(await protectedBlob(`${base}.${extension}${params.toString() ? `?${params}` : ''}`), `informe-rutinas${kind === 'detail' ? '-detalle' : ''}.${extension}`); }
+    catch (error) { toast(error.message, true); }
+    finally { button.disabled = false; button.textContent = texto; }
+  });
+}
 function routineCycleSection(target, client) {
   if (!target) return;
   let offset = 0;
   const load = () => {
     target.innerHTML = '<p class="empty">Cargando rutinas del ciclo…</p>';
     api(`/api/clients/${encodeURIComponent(client.id)}/routine-cycle?offset=${offset}`).then(report => {
-      target.innerHTML = routineCycleMarkup(report, 'trainer');
+      target.innerHTML = `${routineCycleMarkup(report, 'trainer')}<p class="eyebrow" style="margin-top:14px">INFORME DE RUTINAS</p>${routineReportActions({ clientId: client.id })}`;
+      bindRoutineReportActions(target, { clientId: client.id });
       target.querySelectorAll('[data-cycle-step]').forEach(button => button.onclick = () => { offset = Math.min(0, Math.max(-24, offset + Number(button.dataset.cycleStep))); load(); });
     }).catch(error => { target.innerHTML = `<p class="empty">${escapeHtml(error.message || 'No se pudo cargar el ciclo.')}</p>`; });
   };
@@ -7048,8 +7068,9 @@ function renderPortalReports() {
   const weights = Array.isArray(portalData.weightLogs) ? portalData.weightLogs : [];
   const history = weights.slice().sort((a, b) => new Date(b.measured_at) - new Date(a.measured_at));
   const weightRows = history.slice(0, 20).map(item => `<tr><td data-label="Fecha">${String(item.measured_at).slice(0, 10)}</td><td data-label="Peso">${portalWeightLabel(item)}</td><td data-label="Origen">Registro personal</td><td data-label="Acciones"><button type="button" class="secondary" data-delete-weight="${item.id}">Eliminar</button></td></tr>`).join('');
-  informes.innerHTML = `${portalPeriodControlsMarkup()}${portalAttendanceReport()}<section class="portal-report-section"><div class="card-head"><div><h3>Evolución de peso</h3><p>Registros personales, separados de tus InBody.</p></div><label class="portal-unit-select">Mostrar en<select id="portal-weight-unit"><option value="kg" ${portalWeightUnit === 'kg' ? 'selected' : ''}>kg</option><option value="lb" ${portalWeightUnit === 'lb' ? 'selected' : ''}>lb</option></select></label></div>${portalWeightLineChart(weights)}${history.length ? `<div class="table-wrap"><table class="stack-mobile portal-weight-table"><thead><tr><th>Fecha</th><th>Peso</th><th>Origen</th><th>Acciones</th></tr></thead><tbody>${weightRows}</tbody></table></div>` : '<p class="empty">Aún no tienes registros de peso.</p>'}</section><section class="portal-report-downloads"><article class="card portal-report"><div><h3>Mi cumplimiento</h3><p>Descarga un PDF con tu avance.</p></div><button class="secondary" data-portal-report="compliance">Descargar PDF</button></article><article class="card portal-report"><div><h3>Estado de cuenta</h3><p>Lo facturado, pagado y pendiente.</p></div><button class="secondary" data-portal-report="statement">Descargar PDF</button></article></section>`;
+  informes.innerHTML = `${portalPeriodControlsMarkup()}${portalAttendanceReport()}<section class="portal-report-section"><div class="card-head"><div><h3>Evolución de peso</h3><p>Registros personales, separados de tus InBody.</p></div><label class="portal-unit-select">Mostrar en<select id="portal-weight-unit"><option value="kg" ${portalWeightUnit === 'kg' ? 'selected' : ''}>kg</option><option value="lb" ${portalWeightUnit === 'lb' ? 'selected' : ''}>lb</option></select></label></div>${portalWeightLineChart(weights)}${history.length ? `<div class="table-wrap"><table class="stack-mobile portal-weight-table"><thead><tr><th>Fecha</th><th>Peso</th><th>Origen</th><th>Acciones</th></tr></thead><tbody>${weightRows}</tbody></table></div>` : '<p class="empty">Aún no tienes registros de peso.</p>'}</section><section class="portal-report-downloads"><article class="card portal-report"><div><h3>Mi cumplimiento</h3><p>Descarga un PDF con tu avance.</p></div><button class="secondary" data-portal-report="compliance">Descargar PDF</button></article><article class="card portal-report"><div><h3>Estado de cuenta</h3><p>Lo facturado, pagado y pendiente.</p></div><button class="secondary" data-portal-report="statement">Descargar PDF</button></article></section>${portalData?.client?.service_type === 'rutinas' ? `<section class="portal-report-section" id="portal-routine-report"><div class="card-head"><div><h3>Mis rutinas</h3><p>Rutinas enviadas y hechas por ciclo, con repeticiones y avance.</p></div></div>${routineReportActions({ portal: true })}</section>` : ''}`;
   bindPortalPeriodControls('portal-report-period');
+  const bloqueRutinasPortal = document.getElementById('portal-routine-report'); if (bloqueRutinasPortal) bindRoutineReportActions(bloqueRutinasPortal, { portal: true });
   document.getElementById('portal-weight-unit').onchange = event => { portalWeightUnit = event.target.value; renderPortalReports(); };
   informes.querySelectorAll('[data-delete-weight]').forEach(button => button.onclick = async () => { if (!confirm('¿Eliminar este registro de peso?')) return; try { await api(`/api/portal/weight-logs/${button.dataset.deleteWeight}`, { method: 'DELETE' }); await loadPortalData(); toast('Registro eliminado'); } catch (error) { toast(error.message, true); } });
   informes.querySelectorAll('[data-portal-report]').forEach(button => button.onclick = async () => {

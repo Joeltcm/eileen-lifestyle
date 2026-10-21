@@ -1,4 +1,5 @@
 import PDFDocument from 'pdfkit';
+import type { RoutineComplianceAllRow, RoutineComplianceSeries } from './routine-compliance-report.js';
 
 type PdfRecord = Record<string, any>;
 type Column = { label: string; key: string; width: number; align?: 'left' | 'right' | 'center'; format?: (value: any, row: PdfRecord) => string };
@@ -455,5 +456,102 @@ export function compliancePdf(client: PdfRecord | null, resumen: PdfRecord, time
     document.font('Helvetica').fontSize(8).fillColor(colors.muted).text(
       'Las clases pendientes, futuras, pausadas y canceladas por la entrenadora no forman parte de la métrica.',
       42, document.y, { width: 511 });
+  });
+}
+
+// ── Informes de cumplimiento de RUTINAS ───────────────────────────────────────────────────────────────────────────
+// "Enviadas" y "hechas" son números distintos; hecha = ejecución cerrada con más de 0 %, completa o parcial, repeticiones incluidas.
+// Cumplimiento = hechas ÷ cupo (puede pasar de 100 %). La calidad (promedio, completas/parciales, tiempo) va aparte.
+const routineStatusText: Record<string, string> = { active: 'Vigente', upcoming: 'Aún no abre', expired: 'Vencida' };
+const routineMinutes = (seconds: number) => (seconds > 0 ? `${Math.max(1, Math.round(seconds / 60))} min` : '-');
+const routineFootnote = 'Hechas = ejecuciones cerradas con más de 0 %, completas o parciales (las repeticiones cuentan). Cumplimiento = hechas ÷ cupo del ciclo y puede superar 100 %. Enviadas = rutinas distintas asignadas al ciclo.';
+
+export function routineCompliancePdf(series: RoutineComplianceSeries, audience: 'trainer' | 'client' = 'trainer') {
+  return pdfBuffer(document => {
+    const range = series.from && series.to ? `${dmy(series.from)} al ${dmy(series.to)} · ${series.totals.cycles} ciclo${series.totals.cycles === 1 ? '' : 's'}` : 'Rutinas sueltas';
+    brandHeader(document, audience === 'client' ? 'Mi informe de rutinas' : 'Informe de rutinas', range);
+    const top = document.y;
+    infoPair(document, 'Cliente', clean(series.client.name), 42, top, 245);
+    infoPair(document, 'Emitido', dmy(series.generatedOn), 310, top, 245);
+    infoPair(document, 'Plan', clean(series.client.planName || 'Rutinas sueltas'), 42, top + 40, 245);
+    infoPair(document, 'Cupo por ciclo', series.client.quota ? `${series.client.quota} rutinas` : '-', 310, top + 40, 245);
+    document.y = top + 88;
+
+    const t = series.totals;
+    if (series.client.isRoutinePlan) {
+      summaryBoxes(document, [
+        { label: 'Cumplimiento promedio', value: t.complianceAverage === null ? 'Sin datos' : `${t.complianceAverage}%` },
+        { label: 'Enviadas · hechas', value: `${t.sent} · ${t.done}` },
+        { label: 'Repeticiones', value: String(t.repeats) },
+        { label: '% completado promedio', value: t.averagePercent === null ? '-' : `${t.averagePercent}%` }
+      ]);
+      document.font('Helvetica-Bold').fontSize(11).fillColor(colors.ink).text('Ciclo por ciclo', 42, document.y);
+      document.y += 6;
+      table(document, [
+        { label: 'Ciclo', key: 'period', width: 128 }, { label: 'Cupo', key: 'quota', width: 34, align: 'right', format: v => (v == null ? '-' : String(v)) },
+        { label: 'Enviadas', key: 'sent', width: 50, align: 'right' }, { label: 'Hechas', key: 'done', width: 46, align: 'right' }, { label: 'Repet.', key: 'repeats', width: 42, align: 'right' },
+        { label: 'Sin hacer', key: 'without', width: 50, align: 'right' }, { label: 'Cumplim.', key: 'compliancePercent', width: 58, align: 'right', format: v => (v == null ? 'Sin enviar' : `${v}%`) },
+        { label: 'Compl.', key: 'averagePercent', width: 52, align: 'right', format: v => (v == null ? '-' : `${v}%`) }, { label: 'Tiempo', key: 'totalSeconds', width: 51, align: 'right', format: v => routineMinutes(Number(v)) }
+      ], series.cycles.map(row => ({ ...row, period: `${dmy(row.start)} al ${dmy(row.end)}${row.current ? ' (actual)' : ''}`, without: row.pending + row.expired })), 'Informe de rutinas');
+      document.moveDown(0.6);
+      document.font('Helvetica').fontSize(8.5).fillColor(colors.ink).text(
+        `Calidad: ${t.complete} completa${t.complete === 1 ? '' : 's'} y ${t.partial} parcial${t.partial === 1 ? '' : 'es'} · ${routineMinutes(t.totalSeconds) === '-' ? 'sin tiempo registrado' : `${routineMinutes(t.totalSeconds)} en total`}.${t.expired ? ` ${t.expired} rutina${t.expired === 1 ? '' : 's'} vencida${t.expired === 1 ? '' : 's'} sin hacer.` : ''}`, 42, document.y, { width: 511 });
+      document.moveDown(1);
+    }
+
+    if (series.detail.length) {
+      ensureSpace(document, 80, 'Informe de rutinas');
+      const recent = series.detail.slice(-150);
+      document.font('Helvetica-Bold').fontSize(11).fillColor(colors.ink).text('Detalle por fecha y hora', 42, document.y);
+      document.y += 6;
+      table(document, [
+        { label: 'Fecha', key: 'date', width: 58, format: v => dmy(v) }, { label: 'Hora', key: 'time', width: 34 }, { label: 'Evento', key: 'event', width: 48 },
+        { label: 'Rutina', key: 'title', width: 118 }, { label: 'Detalle', key: 'detail', width: 253 }
+      ], recent, 'Informe de rutinas');
+      if (series.detail.length > recent.length) document.font('Helvetica').fontSize(8).fillColor(colors.muted).text(`Se muestran los ${recent.length} eventos más recientes de ${series.detail.length}.`, 42, document.y + 4, { width: 511 });
+      document.moveDown(1);
+    }
+
+    if (series.entitlements.length) {
+      ensureSpace(document, 90, 'Informe de rutinas');
+      document.font('Helvetica-Bold').fontSize(11).fillColor(colors.ink).text('Rutinas sueltas', 42, document.y);
+      document.y += 6;
+      table(document, [
+        { label: 'Venta', key: 'quantity', width: 56, format: v => `${v} rutina${Number(v) === 1 ? '' : 's'}` }, { label: 'Ventana', key: 'window', width: 128 },
+        { label: 'Enviadas', key: 'sent', width: 52, align: 'right' }, { label: 'Hechas', key: 'done', width: 48, align: 'right' }, { label: 'Estado', key: 'statusText', width: 62 },
+        { label: audience === 'client' ? '' : 'Factura', key: 'invoice', width: 165 }
+      ], series.entitlements.map(row => ({ ...row, window: `${dmy(row.from)} al ${dmy(row.until)}`, statusText: routineStatusText[row.status] || row.status,
+        invoice: audience === 'client' || !row.invoiceCode ? '' : `${row.invoiceCode} · ${money(row.invoiceTotal)} · ${clean(row.invoiceStatus)}` })), 'Informe de rutinas');
+      document.moveDown(1);
+    }
+
+    if (!series.cycles.length && !series.entitlements.length) {
+      document.font('Helvetica').fontSize(10).fillColor(colors.muted).text('No hay rutinas en el período.', 42, document.y);
+      document.moveDown(1);
+    }
+    ensureSpace(document, 40, 'Informe de rutinas');
+    document.font('Helvetica').fontSize(8).fillColor(colors.muted).text(routineFootnote, 42, document.y, { width: 511 });
+  });
+}
+
+export function routineComplianceAllPdf(data: { generatedOn: string; rows: RoutineComplianceAllRow[] }) {
+  return pdfBuffer(document => {
+    brandHeader(document, 'Informe de rutinas · todos los clientes', `Ciclo actual de cada cliente con plan de rutinas · ${dmy(data.generatedOn)}`);
+    const sent = data.rows.reduce((sum, row) => sum + row.sent, 0); const done = data.rows.reduce((sum, row) => sum + row.done, 0);
+    const withQuota = data.rows.filter(row => row.compliancePercent !== null);
+    summaryBoxes(document, [
+      { label: 'Clientes', value: String(data.rows.length) },
+      { label: 'Enviadas · hechas', value: `${sent} · ${done}` },
+      { label: 'Cumplimiento promedio', value: withQuota.length ? `${Math.round(withQuota.reduce((sum, row) => sum + (row.compliancePercent || 0), 0) / withQuota.length)}%` : 'Sin datos' }
+    ]);
+    if (!data.rows.length) return void document.font('Helvetica').fontSize(10).fillColor(colors.muted).text('No hay clientes con plan de rutinas activo.', 42, document.y);
+    table(document, [
+      { label: 'Cliente', key: 'name', width: 120 }, { label: 'Ciclo actual', key: 'period', width: 100 }, { label: 'Cupo', key: 'quota', width: 34, align: 'right', format: v => (v == null ? '-' : String(v)) },
+      { label: 'Enviadas', key: 'sent', width: 50, align: 'right' }, { label: 'Hechas', key: 'done', width: 44, align: 'right' }, { label: 'Repet.', key: 'repeats', width: 40, align: 'right' },
+      { label: 'Sin hacer', key: 'withoutDone', width: 54, align: 'right' }, { label: 'Cumplim.', key: 'compliancePercent', width: 69, align: 'right', format: v => (v == null ? 'Sin enviar' : `${v}%`) }
+    ], data.rows.map(row => ({ ...row, period: `${dmy(row.cycleStart)} al ${dmy(row.cycleEnd)}` })), 'Informe de rutinas');
+    document.moveDown(1);
+    ensureSpace(document, 40, 'Informe de rutinas');
+    document.font('Helvetica').fontSize(8).fillColor(colors.muted).text(routineFootnote, 42, document.y, { width: 511 });
   });
 }

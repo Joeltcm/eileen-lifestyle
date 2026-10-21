@@ -128,6 +128,7 @@ export async function routineCycleReport(clientId: string, offset: number, scope
 
   events.sort((a, b) => a.date.localeCompare(b.date)
     || (TYPE_ORDER[a.type] - TYPE_ORDER[b.type])
+    || Number(a.at === null) - Number(b.at === null)   // con hora real primero; sin hora (no se inventa) al final del día
     || String(a.at ?? '').localeCompare(String(b.at ?? '')));
 
   const done = completions.length;

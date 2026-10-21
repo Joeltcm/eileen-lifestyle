@@ -16,7 +16,8 @@ import { moveSessionInTransaction } from './session-reschedule.js';
 import { complianceCompletionExpression, complianceSessionCondition } from './compliance.js';
 import { routineSuggestionsReady, suggestRoutine } from './routine-suggestions.js';
 import { normalizeRegisteredVideo } from './video-upload-normalizer.js';
-import { accountStatementPdf, accountsReceivablePdf, billingInvoicePdf, compliancePdf, contractPdf, invoicePdf, monthlyFinancePdf } from './billing-reports.js';
+import { accountStatementPdf, accountsReceivablePdf, billingInvoicePdf, compliancePdf, contractPdf, invoicePdf, monthlyFinancePdf, routineComplianceAllPdf, routineCompliancePdf } from './billing-reports.js';
+import { routineComplianceAll, routineComplianceSeries } from './routine-compliance-report.js';
 import { fechaDeNegocioPanama, fechaPanamaDiasAtras } from './panama-date.js';
 import { resolveBillingEngine } from './billing-engine.js';
 import { planBillingGeneration, runBillingGeneration, shiftCutAfterPause } from './billing-generator.js';
@@ -9478,6 +9479,64 @@ app.patch('/api/clients/:clientId/routine-history/:completionId', { preHandler: 
   });
   if (!result) return reply.code(404).send({ error: 'Registro de rutina no encontrado' });
   return result;
+});
+
+// ── Informes de cumplimiento de rutinas (Eileen y el propio cliente) ───────────────────────────────────────────────
+// Mismas cifras que la bitácora del ciclo: enviadas ≠ hechas, parciales y repeticiones cuentan, calidad aparte.
+const routineReportQuery = z.object({
+  clientId: z.string().uuid().optional(),
+  cycles: z.coerce.number().int().min(1).max(12).default(6),
+  detail: z.enum(['0', '1']).default('0')
+});
+const routineSeriesFileName = (name: string) => String(name).toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+
+app.get('/api/reports/routine-compliance.pdf', { preHandler: requireStaff }, async (request, reply) => {
+  const auth = request.user as AuthUser; const query = routineReportQuery.parse(request.query);
+  if (!query.clientId) {
+    const all = await routineComplianceAll(auth.sub);
+    return sendPdf(reply, await routineComplianceAllPdf(all), `rutinas-todos-${all.generatedOn}.pdf`);
+  }
+  const series = await routineComplianceSeries(query.clientId, query.cycles, { ownerId: auth.sub });
+  if (!series) return reply.code(404).send({ error: 'Cliente no encontrado' });
+  return sendPdf(reply, await routineCompliancePdf(series, 'trainer'), `rutinas-${routineSeriesFileName(series.client.name)}.pdf`);
+});
+
+app.get('/api/reports/routine-compliance.csv', { preHandler: requireStaff }, async (request, reply) => {
+  const auth = request.user as AuthUser; const query = routineReportQuery.parse(request.query);
+  const fecha = (value: string) => `${value.slice(8, 10)}-${value.slice(5, 7)}-${value.slice(0, 4)}`;
+  let lines: string[]; let fileName: string;
+  if (!query.clientId) {
+    const all = await routineComplianceAll(auth.sub);
+    lines = [['Cliente', 'Inicio del ciclo', 'Fin del ciclo', 'Cupo', 'Enviadas', 'Hechas', 'Repetidas', 'Sin hacer', 'Cumplimiento %', '% promedio completado'].map(csvCell).join(','),
+      ...all.rows.map(row => [row.name, fecha(row.cycleStart), fecha(row.cycleEnd), row.quota ?? '', row.sent, row.done, row.repeats, row.withoutDone, row.compliancePercent ?? '', row.averagePercent ?? ''].map(csvCell).join(','))];
+    fileName = `rutinas-todos-${all.generatedOn}.csv`;
+  } else {
+    const series = await routineComplianceSeries(query.clientId, query.cycles, { ownerId: auth.sub });
+    if (!series) return reply.code(404).send({ error: 'Cliente no encontrado' });
+    if (query.detail === '1') {
+      lines = [['Cliente', 'Inicio del ciclo', 'Fecha', 'Hora', 'Evento', 'Rutina', 'Detalle'].map(csvCell).join(','),
+        ...series.detail.map(row => [series.client.name, fecha(row.cycleStart), fecha(row.date), row.time, row.event, row.title, row.detail].map(csvCell).join(','))];
+      fileName = `rutinas-detalle-${routineSeriesFileName(series.client.name)}.csv`;
+    } else {
+      lines = [['Cliente', 'Inicio del ciclo', 'Fin del ciclo', 'Cupo', 'Enviadas', 'Hechas', 'Distintas', 'Repetidas', 'Pendientes', 'Vencidas', 'Cumplimiento %', '% promedio completado', 'Completas', 'Parciales', 'Minutos'].map(csvCell).join(','),
+        ...series.cycles.map(row => [series.client.name, fecha(row.start), fecha(row.end), row.quota ?? '', row.sent, row.done, row.distinctDone, row.repeats, row.pending, row.expired, row.compliancePercent ?? '', row.averagePercent ?? '', row.complete, row.partial, Math.round(row.totalSeconds / 60)].map(csvCell).join(','))];
+      fileName = `rutinas-${routineSeriesFileName(series.client.name)}.csv`;
+    }
+  }
+  reply.header('Content-Type', 'text/csv; charset=utf-8'); reply.header('Content-Disposition', `attachment; filename="${fileName}"`);
+  return `﻿${lines.join('\n')}`;
+});
+
+// El cliente solo puede pedir SU informe: el identificador sale del token, nunca de la petición.
+app.get('/api/portal/reports/routine-compliance.pdf', { preHandler: requireAuth }, async (request, reply) => {
+  const auth = request.user as AuthUser;
+  if (auth.role !== 'client') return reply.code(403).send({ error: 'Acceso exclusivo para clientes' });
+  const client = await portalClient(auth.sub);
+  if (!client) return reply.code(404).send({ error: 'Portal de cliente no encontrado' });
+  const { cycles } = routineReportQuery.parse(request.query);
+  const series = await routineComplianceSeries(String(client.id), cycles);
+  if (!series) return reply.code(404).send({ error: 'No hay informe de rutinas para este cliente' });
+  return sendPdf(reply, await routineCompliancePdf(series, 'client'), `mis-rutinas-${routineSeriesFileName(series.client.name)}.pdf`);
 });
 
 app.get('/api/portal/reports/compliance.pdf', { preHandler: requireAuth }, async (request, reply) => {
