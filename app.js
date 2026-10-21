@@ -1,4 +1,4 @@
-const APP_VERSION = '310';
+const APP_VERSION = '311';
 const markPwaVersion = () => document.querySelectorAll('.topbar-actions').forEach(actions => {
   if (actions.querySelector('[data-pwa-version]')) return;
   const indicator = document.createElement('span');
@@ -63,74 +63,77 @@ let portalPeriodMonth = dateKey(today).slice(0, 7);
 let portalCutOffset = 0;
 const portalRoutineTimers = new Map();
 const portalRoutineCountdowns = new Map();
-const portalRoutineTimerStorage = routineId => `eileen-routine-timer:${routineId}:${dateKey(today)}`;
+const routineRunKey = (routineId, runNumber = 1) => `${routineId}:run:${Number(runNumber) || 1}`;
+const portalRoutineTimerStorage = (routineId, runNumber = 1) => `eileen-routine-timer:${routineRunKey(routineId, runNumber)}:${dateKey(today)}`;
 const formatRoutineElapsed = seconds => {
   const total = Math.max(0, Math.floor(Number(seconds) || 0));
   return `${String(Math.floor(total / 60)).padStart(2, '0')}:${String(total % 60).padStart(2, '0')}`;
 };
-function routineTimerState(routineId, elapsedSeconds = 0) {
-  if (portalRoutineTimers.has(routineId)) return portalRoutineTimers.get(routineId);
+function routineTimerState(routineId, runNumber = 1, elapsedSeconds = 0) {
+  const key = routineRunKey(routineId, runNumber);
+  if (portalRoutineTimers.has(key)) return portalRoutineTimers.get(key);
   try {
-    const saved = JSON.parse(localStorage.getItem(portalRoutineTimerStorage(routineId)) || 'null');
+    const saved = JSON.parse(localStorage.getItem(portalRoutineTimerStorage(routineId, runNumber)) || 'null');
     if (saved && (saved.startedAt === null || Number.isFinite(Number(saved.startedAt)))) {
       const state = { startedAt: saved.startedAt === null ? null : Number(saved.startedAt), elapsedBefore: Number(saved.elapsedBefore || elapsedSeconds), paused: Boolean(saved.paused) };
-      portalRoutineTimers.set(routineId, state);
-      if (!state.paused && state.startedAt) state.interval = window.setInterval(() => paintRoutineTimer(routineId, elapsedSeconds), 1000);
-      paintRoutineTimer(routineId, elapsedSeconds);
+      portalRoutineTimers.set(key, state);
+      if (!state.paused && state.startedAt) state.interval = window.setInterval(() => paintRoutineTimer(routineId, runNumber, elapsedSeconds), 1000);
+      paintRoutineTimer(routineId, runNumber, elapsedSeconds);
       return state;
     }
   } catch {}
   return null;
 }
-function routineElapsed(routineId, elapsedSeconds = 0) {
-  const state = routineTimerState(routineId, elapsedSeconds);
+function routineElapsed(routineId, runNumber = 1, elapsedSeconds = 0) {
+  const state = routineTimerState(routineId, runNumber, elapsedSeconds);
   return state ? state.elapsedBefore + (state.paused || !state.startedAt ? 0 : Math.floor((Date.now() - state.startedAt) / 1000)) : Number(elapsedSeconds || 0);
 }
-function paintRoutineTimer(routineId, elapsedSeconds = 0) {
-  const clock = document.querySelector(`[data-portal-routine-card="${routineId}"] .routine-timer-clock`);
-  if (clock) clock.textContent = formatRoutineElapsed(routineElapsed(routineId, elapsedSeconds));
+function paintRoutineTimer(routineId, runNumber = 1, elapsedSeconds = 0) {
+  const clock = document.querySelector(`[data-portal-routine-card="${routineId}"][data-routine-run="${runNumber}"] .routine-timer-clock`);
+  if (clock) clock.textContent = formatRoutineElapsed(routineElapsed(routineId, runNumber, elapsedSeconds));
 }
-function startRoutineTimer(routineId, elapsedSeconds = 0) {
-  const existing = routineTimerState(routineId, elapsedSeconds);
+function startRoutineTimer(routineId, runNumber = 1, elapsedSeconds = 0) {
+  const key = routineRunKey(routineId, runNumber); const existing = routineTimerState(routineId, runNumber, elapsedSeconds);
   if (existing && !existing.paused) return;
-  if (existing?.paused) return resumeRoutineTimer(routineId, elapsedSeconds);
+  if (existing?.paused) return resumeRoutineTimer(routineId, runNumber, elapsedSeconds);
   const state = { startedAt: Date.now(), elapsedBefore: Number(elapsedSeconds || 0) };
-  portalRoutineTimers.set(routineId, state);
-  localStorage.setItem(portalRoutineTimerStorage(routineId), JSON.stringify(state));
-  state.interval = window.setInterval(() => paintRoutineTimer(routineId, elapsedSeconds), 1000);
-  paintRoutineTimer(routineId, elapsedSeconds);
-  void api('/api/portal/routine-activity', { method: 'POST', body: { routineId, completedOn: dateKey(today), kind: 'started' } }).catch(() => {});
+  portalRoutineTimers.set(key, state);
+  localStorage.setItem(portalRoutineTimerStorage(routineId, runNumber), JSON.stringify(state));
+  state.interval = window.setInterval(() => paintRoutineTimer(routineId, runNumber, elapsedSeconds), 1000);
+  paintRoutineTimer(routineId, runNumber, elapsedSeconds);
+  void api('/api/portal/routine-activity', { method: 'POST', body: { routineId, runNumber, completedOn: dateKey(today), kind: 'started' } }).catch(() => {});
 }
-function persistRoutineTimer(routineId, state) {
-  localStorage.setItem(portalRoutineTimerStorage(routineId), JSON.stringify({ startedAt: state.startedAt, elapsedBefore: state.elapsedBefore, paused: Boolean(state.paused) }));
+function persistRoutineTimer(routineId, runNumber, state) {
+  localStorage.setItem(portalRoutineTimerStorage(routineId, runNumber), JSON.stringify({ startedAt: state.startedAt, elapsedBefore: state.elapsedBefore, paused: Boolean(state.paused) }));
 }
-function pauseRoutineTimer(routineId, elapsedSeconds = 0) {
-  const state = routineTimerState(routineId, elapsedSeconds); if (!state || state.paused) return routineElapsed(routineId, elapsedSeconds);
-  const elapsed = routineElapsed(routineId, elapsedSeconds);
+function pauseRoutineTimer(routineId, runNumber = 1, elapsedSeconds = 0) {
+  const state = routineTimerState(routineId, runNumber, elapsedSeconds); if (!state || state.paused) return routineElapsed(routineId, runNumber, elapsedSeconds);
+  const elapsed = routineElapsed(routineId, runNumber, elapsedSeconds);
   if (state.interval) window.clearInterval(state.interval);
-  state.startedAt = null; state.elapsedBefore = elapsed; state.paused = true; delete state.interval; persistRoutineTimer(routineId, state);
-  void api('/api/portal/routine-activity', { method: 'POST', body: { routineId, completedOn: dateKey(today), kind: 'paused', elapsedSeconds: elapsed } }).catch(() => {});
-  paintRoutineTimer(routineId, elapsedSeconds); return elapsed;
+  state.startedAt = null; state.elapsedBefore = elapsed; state.paused = true; delete state.interval; persistRoutineTimer(routineId, runNumber, state);
+  void api('/api/portal/routine-activity', { method: 'POST', body: { routineId, runNumber, completedOn: dateKey(today), kind: 'paused', elapsedSeconds: elapsed } }).catch(() => {});
+  paintRoutineTimer(routineId, runNumber, elapsedSeconds); return elapsed;
 }
-function resumeRoutineTimer(routineId, elapsedSeconds = 0) {
-  const state = routineTimerState(routineId, elapsedSeconds); if (!state) return startRoutineTimer(routineId, elapsedSeconds);
+function resumeRoutineTimer(routineId, runNumber = 1, elapsedSeconds = 0) {
+  const state = routineTimerState(routineId, runNumber, elapsedSeconds); if (!state) return startRoutineTimer(routineId, runNumber, elapsedSeconds);
   if (!state.paused) return;
-  state.startedAt = Date.now(); state.paused = false; persistRoutineTimer(routineId, state);
-  state.interval = window.setInterval(() => paintRoutineTimer(routineId, elapsedSeconds), 1000); paintRoutineTimer(routineId, elapsedSeconds);
-  void api('/api/portal/routine-activity', { method: 'POST', body: { routineId, completedOn: dateKey(today), kind: 'resumed', elapsedSeconds: state.elapsedBefore } }).catch(() => {});
+  state.startedAt = Date.now(); state.paused = false; persistRoutineTimer(routineId, runNumber, state);
+  state.interval = window.setInterval(() => paintRoutineTimer(routineId, runNumber, elapsedSeconds), 1000); paintRoutineTimer(routineId, runNumber, elapsedSeconds);
+  void api('/api/portal/routine-activity', { method: 'POST', body: { routineId, runNumber, completedOn: dateKey(today), kind: 'resumed', elapsedSeconds: state.elapsedBefore } }).catch(() => {});
 }
-function stopRoutineTimer(routineId, elapsedSeconds = 0) {
-  const state = routineTimerState(routineId, elapsedSeconds);
-  const elapsed = routineElapsed(routineId, elapsedSeconds);
+function stopRoutineTimer(routineId, runNumber = 1, elapsedSeconds = 0) {
+  const key = routineRunKey(routineId, runNumber); const state = routineTimerState(routineId, runNumber, elapsedSeconds);
+  const elapsed = routineElapsed(routineId, runNumber, elapsedSeconds);
   if (state?.interval) window.clearInterval(state.interval);
-  portalRoutineTimers.delete(routineId);
-  localStorage.removeItem(portalRoutineTimerStorage(routineId));
+  portalRoutineTimers.delete(key);
+  localStorage.removeItem(portalRoutineTimerStorage(routineId, runNumber));
   return elapsed;
 }
 // Cuenta regresiva 3-2-1 antes de arrancar el cronómetro de la tarjeta; devuelve false si ya había una en marcha.
-async function runRoutineCountdown(card, routineId, elapsedSeconds = 0) {
-  if (portalRoutineCountdowns.has(routineId)) return false;
-  portalRoutineCountdowns.set(routineId, true);
+async function runRoutineCountdown(card, routineId, runNumber = 1, elapsedSeconds = 0) {
+  const key = routineRunKey(routineId, runNumber);
+  if (portalRoutineCountdowns.has(key)) return false;
+  portalRoutineCountdowns.set(key, true);
   const cuenta = card.querySelector('.routine-countdown');
   const cuentaNumero = card.querySelector('.routine-countdown strong');
   if (cuenta) cuenta.hidden = false;
@@ -143,12 +146,12 @@ async function runRoutineCountdown(card, routineId, elapsedSeconds = 0) {
       cuentaNumero.textContent = '¡Vamos!';
       await new Promise(resolver => setTimeout(resolver, 350));
     }
-    startRoutineTimer(routineId, elapsedSeconds);
+    startRoutineTimer(routineId, runNumber, elapsedSeconds);
     return true;
   } finally {
-    portalRoutineCountdowns.delete(routineId);
+    portalRoutineCountdowns.delete(key);
     if (cuenta) cuenta.hidden = true;
-    paintRoutineTimer(routineId, elapsedSeconds);
+    paintRoutineTimer(routineId, runNumber, elapsedSeconds);
   }
 }
 // Aviso al terminar todos los ejercicios de la rutina.
@@ -4860,7 +4863,7 @@ function routineHistorySection(target, client) {
       const omitted = new Map(); history.forEach(item => item.exercises.filter(exercise => !exercise.completed).forEach(exercise => omitted.set(exercise.name, (omitted.get(exercise.name) || 0) + 1)));
       const omittedText = [...omitted.entries()].sort((a, b) => b[1] - a[1]).slice(0, 3).map(([name, count]) => `${name} (${count})`).join(' · ');
       const modeLabel = state.mode === 'month' ? `Mes · ${attendanceMonthLabel(state.month)}` : state.mode === 'cutoff' ? `Corte ${state.cutOffset === 0 ? 'actual' : 'anterior'}` : 'Rango personalizado';
-      const rows = history.map(item => `<article class="routine-history-item"><header><div><b>${escapeHtml(item.title)}</b><small>${fechaCorta(item.completed_on)} · ${item.completion_percent}% de avance</small></div><strong>${seconds(item.elapsed_seconds)}</strong></header><p>${item.exercises.filter(exercise => exercise.completed).length} de ${item.exercises.length} ejercicios · ${item.feeling ? escapeHtml({ muy_dificil: '😣 Muy difícil', dificil: '😕 Difícil', bien: '🙂 Bien', excelente: '😄 Excelente' }[item.feeling] || item.feeling) : 'sin sensación indicada'}${item.difficulty ? ` · dificultad: ${escapeHtml({ facil: 'Fácil', bien: 'Bien', dificil: 'Difícil' }[item.difficulty] || item.difficulty)}` : ''}</p><div class="routine-history-exercises">${item.exercises.map(exercise => `<span class="${exercise.completed ? 'done' : ''}">${exercise.completed ? '✓' : '○'} ${escapeHtml(exercise.name)}</span>`).join('')}</div>${item.feedback ? `<p class="routine-history-feedback">${escapeHtml(item.feedback)}</p>` : ''}<button type="button" class="secondary routine-history-edit" data-correct-routine-duration="${item.id}" data-current-duration="${item.elapsed_seconds}">Corregir duración</button></article>`).join('');
+      const rows = history.map(item => `<article class="routine-history-item"><header><div><b>${escapeHtml(item.title)}</b><small>${item.completed_at ? fechaHoraPanama(item.completed_at) : fechaCorta(item.completed_on)} · ejecución n.º ${Number(item.run_number || 1)} · ${item.completion_percent}% de avance</small></div><strong>${seconds(item.elapsed_seconds)}</strong></header><p>${item.exercises.filter(exercise => exercise.completed).length} de ${item.exercises.length} ejercicios · ${item.feeling ? escapeHtml({ muy_dificil: '😣 Muy difícil', dificil: '😕 Difícil', bien: '🙂 Bien', excelente: '😄 Excelente' }[item.feeling] || item.feeling) : 'sin sensación indicada'}${item.difficulty ? ` · dificultad: ${escapeHtml({ facil: 'Fácil', bien: 'Bien', dificil: 'Difícil' }[item.difficulty] || item.difficulty)}` : ''}</p><div class="routine-history-exercises">${item.exercises.map(exercise => `<span class="${exercise.completed ? 'done' : ''}">${exercise.completed ? '✓' : '○'} ${escapeHtml(exercise.name)}</span>`).join('')}</div>${item.feedback ? `<p class="routine-history-feedback">${escapeHtml(item.feedback)}</p>` : ''}<button type="button" class="secondary routine-history-edit" data-correct-routine-duration="${item.id}" data-current-duration="${item.elapsed_seconds}">Corregir duración</button></article>`).join('');
       target.innerHTML = `<div class="routine-history-controls${state.mode === 'range' ? ' range-mode' : ''}"><label>Filtrar por<select data-routine-history-mode><option value="month" ${state.mode === 'month' ? 'selected' : ''}>Mes</option><option value="cutoff" ${state.mode === 'cutoff' ? 'selected' : ''}>Corte</option><option value="range" ${state.mode === 'range' ? 'selected' : ''}>Rango de fechas</option></select></label><label>Mes<input type="month" data-routine-history-month value="${state.month}" max="${dateKey(today).slice(0, 7)}" /></label><label data-routine-history-range>Desde<input type="date" data-routine-history-from value="${state.from}" /></label><label data-routine-history-range>Hasta<input type="date" data-routine-history-to value="${state.to}" /></label><button type="button" class="secondary" data-routine-history-apply>Aplicar filtro</button><button type="button" class="secondary" data-routine-history-previous>${state.mode === 'cutoff' ? '‹ Corte anterior' : '‹ Mes anterior'}</button><button type="button" class="secondary" data-routine-history-current>${state.mode === 'cutoff' ? (state.cutOffset === 0 ? 'Corte actual' : 'Corte actual') : 'Mes actual'}</button></div><p class="section-note">${modeLabel} · ${from ? `${fechaCorta(from)} al ${fechaCorta(to)}` : 'elige un rango'}.</p><div class="routine-history-summary"><article><strong>${history.length}</strong><span>rutinas registradas</span></article><article><strong>${completed}</strong><span>completadas</span></article><article><strong>${seconds(average)}</strong><span>duración promedio</span></article></div>${omittedText ? `<p class="section-note">Ejercicios omitidos con más frecuencia: ${escapeHtml(omittedText)}</p>` : ''}<div>${rows || '<p class="routine-history-empty">No hay rutinas registradas en este período.</p>'}</div>`;
       target.querySelector('[data-routine-history-mode]').onchange = event => { state.mode = event.target.value; render(); };
       target.querySelector('[data-routine-history-month]').onchange = event => { state.month = event.target.value; state.mode = 'month'; render(); };
@@ -6451,14 +6454,14 @@ function exerciseRows(exercises, catalog, prefix = 'video') {
   }).join('');
 }
 
-function portalExerciseCompleted(routineId, exerciseIndex, todayCompletion) {
+function portalExerciseCompleted(routineId, runNumber, exerciseIndex, todayCompletion) {
   const detail = (portalData?.routineExerciseCompletions || []).find(item => item.routine_id === routineId
-    && String(item.completed_on).slice(0, 10) === dateKey(today) && Number(item.exercise_index) === exerciseIndex);
+    && String(item.completed_on).slice(0, 10) === dateKey(today) && Number(item.run_number || 1) === Number(runNumber) && Number(item.exercise_index) === exerciseIndex);
   // Las rutinas terminadas antes de existir el checklist no tienen detalle.
   return detail ? Boolean(detail.completed) : Number(todayCompletion?.completion_percent || 0) >= 100;
 }
 
-function portalExerciseRows(exercises, routineId = null, todayCompletion = null) {
+function portalExerciseRows(exercises, routineId = null, runNumber = 1, todayCompletion = null) {
   if (!routineId) return exerciseRows(exercises, portalData?.exercises || []);
   let bloqueActual = null;
   return exercises.map((exercise, position) => {
@@ -6472,12 +6475,12 @@ function portalExerciseRows(exercises, routineId = null, todayCompletion = null)
     const catalogEntry = (portalData?.exercises || []).find(item => item.id === exercise.catalogId || item.slug === exercise.catalogId);
     const tieneVideo = Boolean(catalogEntry?.has_video ?? catalogEntry?.hasVideo);
     const dose = [!bloque && exercise.sets && setsLabel(exercise.sets), exercise.reps, exercise.weight && `Peso: ${exercise.weight}`].filter(Boolean).join(' · ');
-    const checked = portalExerciseCompleted(routineId, position, todayCompletion);
+    const checked = portalExerciseCompleted(routineId, runNumber, position, todayCompletion);
     const videoId = `portal-${routineId}-${catalogEntry?.id || position}-${position}`;
     const video = tieneVideo
       ? `<button type="button" class="secondary session-use exercise-video-toggle" data-play-exercise="${catalogEntry.id}" data-video-target="${videoId}">▶ Ver demostración</button><div class="exercise-video" id="${videoId}" hidden></div>`
       : `<small class="sin-video">${catalogEntry ? 'Sin video todavía' : 'Ejercicio fuera del catálogo'}</small>`;
-    return `${encabezado}<div class="routine-exercise-item"><label class="routine-exercise-check${checked ? ' done' : ''}"><input type="checkbox" data-portal-routine-exercise="${routineId}" data-exercise-index="${position}" ${checked ? 'checked' : ''}><span><b>${escapeHtml(exercise.name || 'Ejercicio')}</b>${dose ? `<small>${escapeHtml(dose)}</small>` : ''}</span></label>${video}</div>`;
+    return `${encabezado}<div class="routine-exercise-item"><label class="routine-exercise-check${checked ? ' done' : ''}"><input type="checkbox" data-portal-routine-exercise="${routineId}" data-run-number="${runNumber}" data-exercise-index="${position}" ${checked ? 'checked' : ''}><span><b>${escapeHtml(exercise.name || 'Ejercicio')}</b>${dose ? `<small>${escapeHtml(dose)}</small>` : ''}</span></label>${video}</div>`;
   }).join('');
 }
 
@@ -6932,7 +6935,13 @@ function renderViajePortal() {
 
 // Tarjeta de cada rutina en el portal del cliente. Volvió a ser una función propia porque la versión 286 llamaba a `portalRoutineCard` sin que existiera: renderPortal se caía y a todos los clientes
 // les salía "La sesión venció". Lleva el cronómetro con su aviso de rutina ofrecida, los bloques con sus rondas, los pesos y las demostraciones.
-const portalRoutineCompletion = routineId => (portalData?.routineCompletions || []).find(item => item.routine_id === routineId && String(item.completed_on).slice(0, 10) === dateKey(today));
+function portalRoutineRunNumber(routineId) {
+  const todayRuns = (portalData?.routineCompletions || []).filter(item => item.routine_id === routineId && String(item.completed_on).slice(0, 10) === dateKey(today));
+  if (!todayRuns.length) return 1;
+  const latest = todayRuns.reduce((current, item) => Number(item.run_number || 1) > Number(current.run_number || 1) ? item : current);
+  return (latest.completed_at || Number(latest.completion_percent || 0) >= 100) ? Number(latest.run_number || 1) + 1 : Number(latest.run_number || 1);
+}
+const portalRoutineCompletion = (routineId, runNumber = portalRoutineRunNumber(routineId)) => (portalData?.routineCompletions || []).find(item => item.routine_id === routineId && String(item.completed_on).slice(0, 10) === dateKey(today) && Number(item.run_number || 1) === Number(runNumber));
 function portalRoutineHistoryMarkup() {
   const target = document.getElementById('portal-routine-history'); if (!target) return;
   const history = Array.isArray(portalData?.routineHistory) ? portalData.routineHistory : [];
@@ -6995,19 +7004,30 @@ function portalSignContract(contractId) {
   };
 }
 function portalRoutineCard(routine) {
-  const todayCompletion = portalRoutineCompletion(routine.id);
+  const todayRuns = (portalData?.routineCompletions || []).filter(item => item.routine_id === routine.id && String(item.completed_on).slice(0, 10) === dateKey(today));
+  const latestRun = todayRuns.length ? todayRuns.reduce((current, item) => Number(item.run_number || 1) > Number(current.run_number || 1) ? item : current) : null;
+  const latestClosed = Boolean(latestRun?.completed_at) || Number(latestRun?.completion_percent || 0) >= 100;
+  // Después de cerrar una ejecución mantenemos su tarjeta visible (resultado y
+  // feedback) y ofrecemos la repetición por separado. Al iniciarla se vuelve a
+  // dibujar como ejecución nueva, sin esconder lo que acaba de completar.
+  const nextRunNumber = portalRoutineRunNumber(routine.id);
+  const runNumber = latestClosed ? Number(latestRun.run_number || 1) : nextRunNumber;
+  const todayCompletion = portalRoutineCompletion(routine.id, runNumber);
   const oferta = ofertaDeRutina(routine.id);
   const exercises = Array.isArray(routine.exercises) ? routine.exercises : [];
   const elapsedBase = Number(todayCompletion?.elapsed_seconds || 0);
-  const timer = routineTimerState(routine.id, elapsedBase);
-  const elapsed = routineElapsed(routine.id, elapsedBase);
+  const timer = routineTimerState(routine.id, runNumber, elapsedBase);
+  const elapsed = routineElapsed(routine.id, runNumber, elapsedBase);
   const started = Boolean(timer) || elapsed > 0;
   const completed = Number(todayCompletion?.completion_percent || 0) >= 100;
-  const completedCount = exercises.reduce((total, _, index) => total + (portalExerciseCompleted(routine.id, index, todayCompletion) ? 1 : 0), 0);
+  const completedCount = exercises.reduce((total, _, index) => total + (portalExerciseCompleted(routine.id, runNumber, index, todayCompletion) ? 1 : 0), 0);
   const hoyIso = dateKey(today);
   const demoPosition = portalData?.demo ? `<span class="demo-routine-position">Rutina ${routine.demo_routine_index} de ${routine.demo_routine_total}</span>` : '';
-  const feedback = completed ? `<form data-portal-routine-feedback="${routine.id}" class="routine-feedback-form"><strong>¿Cómo te sentiste?</strong><div class="routine-feedback-options"><label>Sensación<select name="feeling"><option value="">Selecciona</option><option value="excelente" ${todayCompletion?.feeling === 'excelente' ? 'selected' : ''}>Excelente</option><option value="bien" ${todayCompletion?.feeling === 'bien' ? 'selected' : ''}>Bien</option><option value="dificil" ${todayCompletion?.feeling === 'dificil' ? 'selected' : ''}>Difícil</option><option value="muy_dificil" ${todayCompletion?.feeling === 'muy_dificil' ? 'selected' : ''}>Muy difícil</option></select></label><label>Dificultad<select name="difficulty"><option value="">Selecciona</option><option value="facil" ${todayCompletion?.difficulty === 'facil' ? 'selected' : ''}>Fácil</option><option value="bien" ${todayCompletion?.difficulty === 'bien' ? 'selected' : ''}>Bien</option><option value="dificil" ${todayCompletion?.difficulty === 'dificil' ? 'selected' : ''}>Difícil</option></select></label></div><label>Comentario <textarea name="feedback" maxlength="500" placeholder="Cuéntale a Eileen cómo fue tu entrenamiento">${escapeHtml(todayCompletion?.feedback || '')}</textarea></label><button type="submit" class="secondary">${todayCompletion?.feedback || todayCompletion?.feeling || todayCompletion?.difficulty ? 'Actualizar feedback' : 'Enviar feedback (opcional)'}</button></form>` : '';
-  return `<article class="card portal-routine-card" data-portal-routine-card="${routine.id}"><div class="card-head"><div>${demoPosition}<h3>${escapeHtml(routine.title)}</h3><p><span class="routine-descripcion">${escapeHtml(routine.description || '')}</span> · ${routine.sessions_per_week} veces por semana</p>${routine.due_on ? `<p class="routine-due${dateOnly(routine.due_on) < hoyIso ? ' overdue' : ''}">${dateOnly(routine.due_on) < hoyIso ? 'Venció el' : 'Para cumplirla antes del'} ${fechaCorta(routine.due_on)}</p>` : ''}</div></div>${oferta ? `<p class="portal-offer-inline">Rutina de hoy en lugar de tu clase: si la cumples hoy, cuenta como clase${oferta.origin === 'client' ? '; si no, la clase se da por perdida' : ''}.</p>` : ''}<div class="routine-round-summary"><strong>${completedCount} de ${exercises.length} ejercicios</strong><span>${completed ? 'Rutina completada hoy' : 'Marca cada ejercicio al terminarlo'}</span></div><div class="routine-timer-row${timer && !timer.paused && timer.startedAt ? ' is-running' : ''}" data-routine-timer="${routine.id}"><span>Tiempo activo <b class="routine-timer-clock" data-timer-display>${formatRoutineElapsed(elapsed)}</b></span><div class="routine-timer-actions"><button type="button" class="primary routine-timer-button" data-start-routine-timer="${routine.id}" data-timer-toggle>${timer && !timer.paused ? 'Cronómetro activo' : started ? '▶ Reanudar entrenamiento' : '▶ Iniciar entrenamiento'}</button><button type="button" class="secondary" data-pause-routine-timer="${routine.id}" ${timer && !timer.paused ? '' : 'hidden'}>⏸ Pausar</button></div></div><div class="routine-countdown" hidden><span>Prepárate</span><strong>3</strong><small>El cronómetro comenzará después de la cuenta regresiva</small></div>${!started && !completed ? '<p class="routine-timer-required">Primero toca “Iniciar entrenamiento”. El tiempo activo se guarda para Eileen.</p>' : ''}<div class="exercise-preview routine-exercise-checks">${portalExerciseRows(exercises, routine.id, todayCompletion)}</div><button type="button" class="primary routine-complete-button" data-complete-routine="${routine.id}" data-completed="${completed}" ${!started || completed ? 'disabled' : ''}>${completed ? 'Rutina completada' : 'Completar rutina'}</button>${feedback}</article>`;
+  const repetition = runNumber > 1 ? `<span class="routine-run-label">Repetición n.º ${runNumber}</span>` : '';
+  const feedback = completed ? `<form data-portal-routine-feedback="${routine.id}" data-run-number="${runNumber}" class="routine-feedback-form"><strong>¿Cómo te sentiste?</strong><div class="routine-feedback-options"><label>Sensación<select name="feeling"><option value="">Selecciona</option><option value="excelente" ${todayCompletion?.feeling === 'excelente' ? 'selected' : ''}>Excelente</option><option value="bien" ${todayCompletion?.feeling === 'bien' ? 'selected' : ''}>Bien</option><option value="dificil" ${todayCompletion?.feeling === 'dificil' ? 'selected' : ''}>Difícil</option><option value="muy_dificil" ${todayCompletion?.feeling === 'muy_dificil' ? 'selected' : ''}>Muy difícil</option></select></label><label>Dificultad<select name="difficulty"><option value="">Selecciona</option><option value="facil" ${todayCompletion?.difficulty === 'facil' ? 'selected' : ''}>Fácil</option><option value="bien" ${todayCompletion?.difficulty === 'bien' ? 'selected' : ''}>Bien</option><option value="dificil" ${todayCompletion?.difficulty === 'dificil' ? 'selected' : ''}>Difícil</option></select></label></div><label>Comentario <textarea name="feedback" maxlength="500" placeholder="Cuéntale a Eileen cómo fue tu entrenamiento">${escapeHtml(todayCompletion?.feedback || '')}</textarea></label><button type="submit" class="secondary">${todayCompletion?.feedback || todayCompletion?.feeling || todayCompletion?.difficulty ? 'Actualizar feedback' : 'Enviar feedback (opcional)'}</button></form>` : '';
+  const startLabel = timer && !timer.paused ? 'Cronómetro activo' : started ? '▶ Reanudar entrenamiento' : '▶ Iniciar entrenamiento';
+  const repeat = completed ? `<button type="button" class="secondary routine-repeat-button" data-start-routine-timer="${routine.id}" data-run-number="${nextRunNumber}" data-repeat-routine="true">▶ Repetir hoy</button><p class="section-note">Inicia una nueva ejecución sin alterar la que ya completaste.</p>` : '';
+  return `<article class="card portal-routine-card" data-portal-routine-card="${routine.id}" data-routine-run="${runNumber}"><div class="card-head"><div>${demoPosition}${repetition}<h3>${escapeHtml(routine.title)}</h3><p><span class="routine-descripcion">${escapeHtml(routine.description || '')}</span> · ${routine.sessions_per_week} veces por semana</p>${routine.due_on ? `<p class="routine-due${dateOnly(routine.due_on) < hoyIso ? ' overdue' : ''}">${dateOnly(routine.due_on) < hoyIso ? 'Venció el' : 'Para cumplirla antes del'} ${fechaCorta(routine.due_on)}</p>` : ''}</div></div>${oferta ? `<p class="portal-offer-inline">Rutina de hoy en lugar de tu clase: si la cumples hoy, cuenta como clase${oferta.origin === 'client' ? '; si no, la clase se da por perdida' : ''}.</p>` : ''}<div class="routine-round-summary"><strong>${completedCount} de ${exercises.length} ejercicios</strong><span>${completed ? 'Rutina completada hoy' : 'Marca cada ejercicio al terminarlo'}</span></div><div class="routine-timer-row${timer && !timer.paused && timer.startedAt ? ' is-running' : ''}" data-routine-timer="${routine.id}"><span>Tiempo activo <b class="routine-timer-clock" data-timer-display>${formatRoutineElapsed(elapsed)}</b></span><div class="routine-timer-actions"><button type="button" class="primary routine-timer-button" data-start-routine-timer="${routine.id}" data-run-number="${runNumber}" data-timer-toggle ${completed ? 'disabled' : ''}>${startLabel}</button><button type="button" class="secondary" data-pause-routine-timer="${routine.id}" data-run-number="${runNumber}" ${timer && !timer.paused ? '' : 'hidden'}>⏸ Pausar</button></div></div><div class="routine-countdown" hidden><span>Prepárate</span><strong>3</strong><small>El cronómetro comenzará después de la cuenta regresiva</small></div>${!started && !completed ? '<p class="routine-timer-required">Primero toca “Iniciar entrenamiento”. El tiempo activo se guarda para Eileen.</p>' : ''}<div class="exercise-preview routine-exercise-checks">${portalExerciseRows(exercises, routine.id, runNumber, todayCompletion)}</div><button type="button" class="primary routine-complete-button" data-complete-routine="${routine.id}" data-run-number="${runNumber}" data-completed="${completed}" ${!started || completed ? 'disabled' : ''}>${completed ? 'Rutina completada' : 'Completar rutina'}</button>${repeat}${runNumber > 1 && !completed ? '<p class="section-note">Esta es una nueva repetición de hoy.</p>' : ''}${feedback}</article>`;
 }
 
 function renderOfertasRutina() {
@@ -7198,23 +7218,23 @@ document.querySelectorAll('[data-portal-view-go]').forEach(link => link.addEvent
 document.getElementById('portal-notification-button').addEventListener('click', () => notificationCenter(true));
 document.getElementById('portal-add-weight').addEventListener('click', portalWeightModal);
 bindPortalPeriodControls('portal-period');
-async function savePortalRoutineExercise(card, routineId, exerciseIndex, completed, completeAll = false) {
-  const completion = portalRoutineCompletion(routineId);
+async function savePortalRoutineExercise(card, routineId, runNumber, exerciseIndex, completed, completeAll = false) {
+  const completion = portalRoutineCompletion(routineId, runNumber);
   const elapsedBase = Number(completion?.elapsed_seconds || 0);
   const boxes = [...card.querySelectorAll('[data-portal-routine-exercise]')];
   const willComplete = completeAll || (completed && boxes.length > 0 && boxes.every(box => box.checked));
-  const timerStarted = Boolean(routineTimerState(routineId, elapsedBase)) || elapsedBase > 0;
+  const timerStarted = Boolean(routineTimerState(routineId, runNumber, elapsedBase)) || elapsedBase > 0;
   if (willComplete && !timerStarted) {
     toast('Inicia el cronómetro antes de completar esta rutina', true);
     return;
   }
-  const elapsedSeconds = routineElapsed(routineId, elapsedBase);
+  const elapsedSeconds = routineElapsed(routineId, runNumber, elapsedBase);
   card.classList.add('loading-state');
   try {
     const resultado = await api('/api/portal/routine-exercise-completions', { method: 'POST', body: {
-      routineId, completedOn: dateKey(today), exerciseIndex, completed, completeAll, elapsedSeconds
+      routineId, runNumber, completedOn: dateKey(today), exerciseIndex, completed, completeAll, elapsedSeconds
     } });
-    if (resultado.routineCompleted) stopRoutineTimer(routineId, elapsedSeconds);
+    if (resultado.routineCompleted) stopRoutineTimer(routineId, runNumber, elapsedSeconds);
     await loadPortalData();
     if (resultado.routineCompleted) showRoutineCelebration(card.querySelector('h3')?.textContent || 'Rutina', resultado.completedCount, resultado.totalExercises, elapsedSeconds);
     toast(resultado.routineCompleted ? `Ronda completada · ${formatRoutineElapsed(elapsedSeconds)}` : 'Ejercicio guardado');
@@ -7227,8 +7247,10 @@ document.addEventListener('click', event => {
   const start = event.target.closest('[data-start-routine-timer]');
   if (start) {
     const card = start.closest('[data-portal-routine-card]');
-    if (card) void runRoutineCountdown(card, start.dataset.startRoutineTimer, Number(start.dataset.elapsedSeconds || 0)).then(started => {
+    const runNumber = Number(start.dataset.runNumber || 1);
+    if (card) void runRoutineCountdown(card, start.dataset.startRoutineTimer, runNumber, Number(start.dataset.elapsedSeconds || 0)).then(started => {
       if (started) {
+        if (start.dataset.repeatRoutine) { void loadPortalData(); return; }
         start.disabled = true; start.textContent = 'Cronómetro activo'; card.querySelector('.routine-timer-row')?.classList.add('is-running');
         // La tarjeta no se vuelve a dibujar al arrancar: sin esto, "Pausar" y "Completar rutina" no aparecían hasta marcar un ejercicio.
         const pausa = card.querySelector('[data-pause-routine-timer]'); if (pausa) { pausa.hidden = false; pausa.disabled = false; }
@@ -7240,15 +7262,15 @@ document.addEventListener('click', event => {
   }
   const pause = event.target.closest('[data-pause-routine-timer]');
   if (pause) {
-    const routineId = pause.dataset.pauseRoutineTimer; pause.disabled = true;
-    pauseRoutineTimer(routineId, Number(portalRoutineCompletion(routineId)?.elapsed_seconds || 0));
+    const routineId = pause.dataset.pauseRoutineTimer; const runNumber = Number(pause.dataset.runNumber || 1); pause.disabled = true;
+    pauseRoutineTimer(routineId, runNumber, Number(portalRoutineCompletion(routineId, runNumber)?.elapsed_seconds || 0));
     void loadPortalData();
     return;
   }
   const complete = event.target.closest('[data-complete-routine]');
   if (complete && !complete.disabled) {
     const card = complete.closest('[data-portal-routine-card]');
-    if (card) void savePortalRoutineExercise(card, complete.dataset.completeRoutine, undefined, true, true);
+    if (card) void savePortalRoutineExercise(card, complete.dataset.completeRoutine, Number(complete.dataset.runNumber || 1), undefined, true, true);
   }
 });
 document.addEventListener('change', event => {
@@ -7257,13 +7279,13 @@ document.addEventListener('change', event => {
   const card = checkbox.closest('[data-portal-routine-card]');
   if (!card) return;
   const routineId = checkbox.dataset.portalRoutineExercise;
-  const completion = portalRoutineCompletion(routineId);
-  if (checkbox.checked && !routineTimerState(routineId, completion?.elapsed_seconds || 0) && !(Number(completion?.elapsed_seconds) > 0)) {
+  const runNumber = Number(checkbox.dataset.runNumber || 1); const completion = portalRoutineCompletion(routineId, runNumber);
+  if (checkbox.checked && !routineTimerState(routineId, runNumber, completion?.elapsed_seconds || 0) && !(Number(completion?.elapsed_seconds) > 0)) {
     checkbox.checked = false;
     toast('Inicia el cronómetro antes de marcar ejercicios', true);
     return;
   }
-  void savePortalRoutineExercise(card, routineId, Number(checkbox.dataset.exerciseIndex), checkbox.checked);
+  void savePortalRoutineExercise(card, routineId, runNumber, Number(checkbox.dataset.exerciseIndex), checkbox.checked);
 });
 document.addEventListener('submit', async event => {
   const feedbackForm = event.target.closest('[data-portal-routine-feedback]');
@@ -7271,7 +7293,7 @@ document.addEventListener('submit', async event => {
     event.preventDefault(); const form = new FormData(feedbackForm);
     try {
       feedbackForm.classList.add('loading-state');
-      await api('/api/portal/routine-feedback', { method: 'POST', body: { routineId: feedbackForm.dataset.portalRoutineFeedback, completedOn: dateKey(today), feeling: form.get('feeling') || undefined, difficulty: form.get('difficulty') || undefined, feedback: form.get('feedback') || undefined } });
+      await api('/api/portal/routine-feedback', { method: 'POST', body: { routineId: feedbackForm.dataset.portalRoutineFeedback, runNumber: Number(feedbackForm.dataset.runNumber || 1), completedOn: dateKey(today), feeling: form.get('feeling') || undefined, difficulty: form.get('difficulty') || undefined, feedback: form.get('feedback') || undefined } });
       await loadPortalData(); toast('Feedback enviado a Eileen');
     } catch (error) { toast(error.message, true); feedbackForm.classList.remove('loading-state'); }
     return;
@@ -7439,9 +7461,9 @@ async function mostrarRutinaPublica(token) {
           : proximas.length ? `<p class="portal-offer-inline">Tus próximas clases durante el viaje: ${proximas.slice(0, 4).map(item => `${fechaCorta(`${item.dia}T12:00:00-05:00`)} ${escapeHtml(item.hora)}`).join(' · ')}. Confirma tu rutina <b>el día de cada clase</b> para que cuente.</p>` : ''}
         <div class="routine-timer" id="public-timer"><span class="routine-timer-display" id="public-reloj">00:00</span><button type="button" class="primary routine-timer-button" id="public-toggle">▶ Iniciar rutina</button></div>
         <div class="exercise-preview">${exerciseRows(ejercicios, catalogo, 'pub')}</div>
-        <div id="public-final">${vista.completedToday ? '<p class="portal-payment-ok">Ya confirmaste esta rutina hoy. ¡Gracias!</p>' : ''}
+        <div id="public-final">${vista.completedToday ? `<p class="portal-payment-ok">Ya completaste esta rutina hoy. ${vista.serviceType === 'rutinas' ? `Puedes hacer la repetición n.º ${vista.nextRunNumber}.` : '¡Gracias!'}</p>` : ''}
           <label class="completion-percent public-porcentaje"><input id="public-pct" type="number" min="1" max="100" value="100" /><span>% completado</span></label>
-          <button type="button" class="primary wide-button" id="public-terminar">Terminé mi rutina</button></div>
+          <button type="button" class="primary wide-button" id="public-terminar">${vista.completedToday && vista.serviceType === 'rutinas' ? `Completar repetición n.º ${vista.nextRunNumber}` : 'Terminé mi rutina'}</button></div>
         <small class="public-vigencia">Este enlace vale hasta el ${venceTexto(vista.expiresAt)}</small>
       </article>`;
     const reloj = () => { try { return JSON.parse(localStorage.getItem(claveReloj) || 'null'); } catch { return null; } };
@@ -7460,7 +7482,7 @@ async function mostrarRutinaPublica(token) {
       const boton = event.currentTarget; boton.disabled = true;
       const r = reloj(); const segundos = r ? Math.min(21600, Math.max(1, Math.floor((Date.now() - r.startedAt) / 1000))) : undefined;
       try {
-        const resultado = await api(`/api/public/routine/${token}/complete`, { method: 'POST', auth: false, body: { completionPercent: Number(document.getElementById('public-pct').value) || 100, durationSeconds: segundos } });
+        const resultado = await api(`/api/public/routine/${token}/complete`, { method: 'POST', auth: false, body: { completionPercent: Number(document.getElementById('public-pct').value) || 100, durationSeconds: segundos, ...(vista.serviceType === 'rutinas' ? { runNumber: vista.nextRunNumber } : {}) } });
         localStorage.removeItem(claveReloj); clearInterval(reloj1);
         document.getElementById('public-timer').hidden = true;
         document.getElementById('public-final').innerHTML = `<p class="portal-payment-ok"><b>¡Listo!</b> Eileen ya sabe que terminaste${segundos ? ` en ${duracionLegible(segundos)}` : ''}.${resultado.sessionCompleted ? ' Cuenta como tu clase de hoy.' : ''}</p>`;
