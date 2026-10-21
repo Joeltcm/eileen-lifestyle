@@ -1,4 +1,4 @@
-const APP_VERSION = '317';
+const APP_VERSION = '318';
 const markPwaVersion = () => document.querySelectorAll('.topbar-actions').forEach(actions => {
   if (actions.querySelector('[data-pwa-version]')) return;
   const indicator = document.createElement('span');
@@ -3342,6 +3342,29 @@ function newRoutine(routine = null, duplicate = false, propuesta = null) {
     const due = document.getElementById('routine-due'); due.disabled = true;
     due.closest('label')?.insertAdjacentHTML('beforeend', '<small>Asigna la rutina a un cliente para ponerle fecha.</small>');
   }
+  // Rutinas sueltas: si el cliente tiene ventas vigentes, la rutina puede asignarse "con cargo" a una de ellas y toma su ventana.
+  const presetBono = routineEditorPreset; routineEditorPreset = null;
+  if (!editing) {
+    document.getElementById('routine-cycle-fields')?.insertAdjacentHTML('afterend', '<label id="routine-entitlement-wrap" hidden>Con cargo a rutinas sueltas<select name="entitlementId" id="routine-entitlement"></select><small id="routine-entitlement-help"></small></label>');
+    const bonoWrap = document.getElementById('routine-entitlement-wrap'); const bonoSelect = document.getElementById('routine-entitlement'); const bonoHelp = document.getElementById('routine-entitlement-help');
+    let bonos = [];
+    const aplicarBono = () => {
+      const bono = bonos.find(item => item.id === bonoSelect.value);
+      bonoHelp.textContent = bono ? `Disponible del ${fechaCorta(bono.availableFrom)} al ${fechaCorta(bono.availableUntil)}. La rutina empieza cuando abre la ventana y vale hasta su último día. Quedan ${bono.remaining} de ${bono.quantity} por enviar.` : 'Sin cargo a una venta suelta: se usa la fecha que pongas arriba.';
+      if (bono) { const hoyClave = dateKey(new Date()); document.getElementById('routine-starts').value = bono.availableFrom > hoyClave ? bono.availableFrom : hoyClave; document.getElementById('routine-due').value = bono.availableUntil; }
+    };
+    const cargarBonos = async preseleccion => {
+      bonos = []; bonoSelect.replaceChildren(new Option('Sin cargo a una venta suelta', ''));
+      if (clientSelect.value) { try { bonos = (await api(`/api/clients/${encodeURIComponent(clientSelect.value)}/routine-entitlements`)).filter(item => ['active', 'upcoming'].includes(item.status)); } catch { bonos = []; } }
+      bonos.forEach(item => bonoSelect.add(new Option(`${item.quantity} suelta${item.quantity === 1 ? '' : 's'} · ${fechaCorta(item.availableFrom)} al ${fechaCorta(item.availableUntil)} · quedan ${item.remaining}`, item.id)));
+      bonoWrap.hidden = !bonos.length;
+      if (preseleccion && bonos.some(item => item.id === preseleccion)) { bonoSelect.value = preseleccion; aplicarBono(); }
+    };
+    bonoSelect.addEventListener('change', aplicarBono);
+    clientSelect.addEventListener('change', () => cargarBonos());
+    if (presetBono?.clientId) clientSelect.value = presetBono.clientId;
+    cargarBonos(presetBono?.entitlementId);
+  }
   const categorySelect = document.getElementById('exercise-category');
   const levelSelect = document.getElementById('exercise-level');
   const exerciseSelect = document.getElementById('exercise-choice');
@@ -3675,6 +3698,7 @@ function newRoutine(routine = null, duplicate = false, propuesta = null) {
       if (!editing || startsOn !== initialStartsOn) cuerpo.startsOn = startsOn || null;
       const dueOn = String(form.get('dueOn') || '');
       if (!editing || dueOn !== initialDueOn) cuerpo.dueOn = dueOn || null;
+      if (!editing && form.get('entitlementId')) cuerpo.entitlementId = String(form.get('entitlementId'));
       const rutaGuardado = editing ? `/api/routines/${routine.id}` : '/api/routines';
       let guardada;
       try { guardada = await apiConAvisoDeRepetido(rutaGuardado, { method: editing ? 'PATCH' : 'POST', body: cuerpo }); }
@@ -4893,6 +4917,64 @@ function routineCycleMarkup(report, audience = 'trainer') {
     ${m.done ? `<div class="cycle-quality"><b>Calidad</b><small>${q.complete} completa${q.complete === 1 ? '' : 's'} · ${q.partial} parcial${q.partial === 1 ? '' : 'es'} · promedio ${q.averagePercent} % completado${q.totalSeconds ? ` · ${routineSecondsText(q.totalSeconds)} en total${q.averageSeconds ? ` (${routineSecondsText(q.averageSeconds)} por rutina)` : ''}` : ''}</small><div>${chips(routineFeelingLabels, q.feelings)}${chips(routineDifficultyLabels, q.difficulties)}</div></div>` : ''}
     <div class="cycle-calendar" aria-label="Días con rutinas hechas">${cells.join('')}</div>${empty}${rows ? `<ol class="cycle-timeline">${rows}</ol>` : ''}${next}${nextClient}`;
 }
+// Rutinas sueltas: 1 o un grupo de rutinas vendidas con una ventana desde-hasta, como una clase suelta (decisión de Joel, 21-10-2026).
+const entitlementStatusLabels = { active: 'Vigente', upcoming: 'Aún no abre', expired: 'Vencido', cancelled: 'Anulado' };
+const entitlementInvoiceLabels = { pendiente: 'pendiente de cobro', parcial: 'cobro parcial', pagada: 'pagada', anulada: 'anulada', abierta: 'abierta', vencida: 'vencida' };
+let routineEditorPreset = null;
+const entitlementDefaults = () => { const from = dateKey(new Date()); const until = new Date(); until.setDate(until.getDate() + 30); return { from, until: dateKey(until) }; };
+function routineEntitlementCard(item, audience = 'trainer') {
+  const stats = `Enviadas ${item.sent} de ${item.quantity} · Hechas ${item.done}${item.repeats ? ` (${item.repeats} repetida${item.repeats === 1 ? '' : 's'})` : ''}${item.remaining ? ` · Por enviar ${item.remaining}` : ''}`;
+  const window = item.status === 'upcoming' ? `Abre el ${fechaCorta(item.availableFrom)} y vale hasta el ${fechaCorta(item.availableUntil)}` : `Disponible del ${fechaCorta(item.availableFrom)} al ${fechaCorta(item.availableUntil)}`;
+  const billing = audience === 'client' ? '' : `<small>${item.invoice ? `${escapeHtml(item.invoice.code)} · ${money.format(item.invoice.total)} · ${entitlementInvoiceLabels[item.invoice.status] || escapeHtml(item.invoice.status)}` : 'Sin factura (cortesía)'}${item.notes ? ` · ${escapeHtml(item.notes)}` : ''}</small>`;
+  const actions = audience === 'client' || item.status === 'cancelled' ? '' : `<div class="entitlement-actions">${item.status !== 'expired' ? `<button type="button" class="secondary" data-entitlement-assign="${item.id}">Asignar rutina</button>` : ''}<button type="button" class="secondary" data-entitlement-edit="${item.id}">Cambiar ventana</button><button type="button" class="secondary danger" data-entitlement-cancel="${item.id}">Anular</button></div>`;
+  return `<article class="entitlement-card ${item.status}"><header><b>${item.quantity} rutina${item.quantity === 1 ? '' : 's'} suelta${item.quantity === 1 ? '' : 's'}</b><span class="cycle-chip">${entitlementStatusLabels[item.status] || item.status}</span></header><small>${window}</small><div class="entitlement-stats">${stats}</div>${billing}${actions}</article>`;
+}
+function routineEntitlementForm(client, item = null) {
+  const defaults = entitlementDefaults();
+  const box = document.createElement('div');
+  box.innerHTML = `<form id="entitlement-form"><p class="eyebrow">RUTINAS SUELTAS</p><h2>${item ? 'Cambiar la ventana' : `Vender rutinas a ${escapeHtml(client.name)}`}</h2>
+    <p class="section-note">${item ? 'Si amplías o recortas la ventana, se actualiza la fecha límite de las rutinas ya enviadas con cargo a este bono. La factura no cambia: si hace falta, anúlala y emite otra.' : 'Venta puntual, como una clase suelta: no cambia su plan. Las rutinas se asignan después “con cargo” a esta venta y solo están disponibles dentro de la ventana.'}</p>
+    <div class="form-row"><label>Cantidad de rutinas<input name="quantity" type="number" min="1" max="100" value="${item ? item.quantity : 1}" required /></label>${item ? '' : '<label>Precio por rutina (USD)<input name="unitAmount" type="number" min="0" step="0.01" placeholder="0.00" required /></label>'}</div>
+    <div class="form-row"><label>Disponibles desde<input name="availableFrom" type="date" value="${item ? item.availableFrom : defaults.from}" required /></label><label>Disponibles hasta<input name="availableUntil" type="date" value="${item ? item.availableUntil : defaults.until}" required /></label></div>
+    ${item ? '' : '<p class="form-summary" id="entitlement-total">Total: —</p><label class="checkbox-line"><input type="checkbox" name="invoice" checked /> Generar la factura de rutina suelta</label>'}
+    <label>Notas<textarea name="notes" rows="2" maxlength="500">${item?.notes ? escapeHtml(item.notes) : ''}</textarea></label>
+    <div class="form-row"><button type="button" class="secondary" id="entitlement-cancel">Cancelar</button><button class="primary">${item ? 'Guardar cambios' : 'Registrar venta'}</button></div></form>`;
+  openModal(box);
+  const form = box.querySelector('#entitlement-form');
+  const back = () => { modal.close(); clientDetail(client.id); };
+  form.querySelector('#entitlement-cancel').onclick = back;
+  const total = form.querySelector('#entitlement-total');
+  const paintTotal = () => { if (!total) return; const value = Number(form.elements.quantity.value) * Number(form.elements.unitAmount.value || 0); total.textContent = value > 0 ? `Total: ${money.format(value)}` : 'Total: sin importe (cortesía, no genera factura)'; };
+  form.elements.quantity.addEventListener('input', paintTotal); form.elements.unitAmount?.addEventListener('input', paintTotal); paintTotal();
+  form.addEventListener('submit', async event => {
+    event.preventDefault(); const values = new FormData(form); const button = form.querySelector('button.primary'); button.disabled = true;
+    try {
+      if (item) {
+        await api(`/api/routine-entitlements/${item.id}`, { method: 'PATCH', body: { quantity: Number(values.get('quantity')), availableFrom: values.get('availableFrom'), availableUntil: values.get('availableUntil'), notes: String(values.get('notes') || '').trim() || null } });
+        toast('Ventana actualizada');
+      } else {
+        const result = await api(`/api/clients/${client.id}/routine-entitlements`, { method: 'POST', body: { quantity: Number(values.get('quantity')), unitAmount: Number(values.get('unitAmount') || 0), availableFrom: values.get('availableFrom'), availableUntil: values.get('availableUntil'), invoice: values.get('invoice') === 'on', notes: String(values.get('notes') || '').trim() || undefined } });
+        toast(result.invoice ? `Venta registrada · ${result.invoice.code} por ${money.format(result.invoice.total)}` : 'Venta registrada sin factura');
+      }
+      await loadData(); renderAll(); back();
+    } catch (error) { toast(error.message, true); button.disabled = false; }
+  });
+}
+function routineEntitlementsSection(target, client) {
+  if (!target) return;
+  target.innerHTML = '<p class="empty">Cargando rutinas sueltas…</p>';
+  api(`/api/clients/${encodeURIComponent(client.id)}/routine-entitlements`).then(list => {
+    target.innerHTML = `${list.length ? list.map(item => routineEntitlementCard(item)).join('') : '<p class="empty">No hay rutinas sueltas vendidas.</p>'}<button type="button" class="secondary wide-button" id="sell-routines">Vender rutinas sueltas</button>`;
+    target.querySelector('#sell-routines').onclick = () => routineEntitlementForm(client);
+    target.querySelectorAll('[data-entitlement-assign]').forEach(button => button.onclick = () => { routineEditorPreset = { clientId: client.id, entitlementId: button.dataset.entitlementAssign }; modal.close(); newRoutine(); });
+    target.querySelectorAll('[data-entitlement-edit]').forEach(button => button.onclick = () => routineEntitlementForm(client, list.find(item => item.id === button.dataset.entitlementEdit)));
+    target.querySelectorAll('[data-entitlement-cancel]').forEach(button => button.onclick = async () => {
+      const item = list.find(entry => entry.id === button.dataset.entitlementCancel);
+      if (!confirm(`¿Anular estas ${item.quantity} rutinas sueltas? Las rutinas ya enviadas con cargo a esta venta dejan de estar disponibles para el cliente.${item.invoice ? ` La factura ${item.invoice.code} no se anula sola: hazlo en Facturación si corresponde.` : ''}`)) return;
+      try { await api(`/api/routine-entitlements/${item.id}/cancel`, { method: 'POST', body: {} }); toast('Venta anulada'); routineEntitlementsSection(target, client); } catch (error) { toast(error.message, true); }
+    });
+  }).catch(error => { target.innerHTML = `<p class="empty">${escapeHtml(error.message || 'No se pudieron cargar las rutinas sueltas.')}</p>`; });
+}
 function routineCycleSection(target, client) {
   if (!target) return;
   let offset = 0;
@@ -5402,7 +5484,7 @@ function clientDetail(id) {
     : `${client.planName || 'Mensualidad'} · ${money.format(client.plan)} al mes · corte día ${client.cutoffDay}`;
   const box = document.createElement('div');
   const reviewNotice = client.inbodyReviews.length ? `<button class="secondary wide-button" id="review-inbody">Revisar ${client.inbodyReviews.length} evaluación${client.inbodyReviews.length > 1 ? 'es' : ''} pendiente${client.inbodyReviews.length > 1 ? 's' : ''}</button>` : '';
-  box.innerHTML = `<p class="eyebrow">EXPEDIENTE</p><h2>${escapeHtml(client.name)}</h2><p style="color:#6f7b75;margin-top:-12px">${escapeHtml(client.goal)}<br>${commercialDescription}${notaPago}</p>${clientBillingSection(client)}<p class="eyebrow" style="margin-top:20px">PLAN DE FACTURACIÓN</p><div id="client-billing-subscriptions"><p class="empty">Cargando conceptos a facturar…</p></div><button type="button" class="secondary wide-button" id="add-billing-subscription-detail">Agregar concepto a facturar</button><p class="section-note">La factura automática se calcula con los conceptos de este plan de facturación, no con el monto mensual del perfil.</p>${inbody ? `<div class="metrics" style="grid-template-columns:repeat(2,1fr)"><article><span>Peso</span><strong>${inbody.weight} kg</strong></article><article><span>Masa muscular</span><strong>${inbody.smm} kg</strong></article><article><span>Grasa corporal</span><strong>${inbody.pbf}%</strong></article><article><span>InBody Score</span><strong>${inbody.score}/100</strong></article></div><p class="eyebrow" style="margin-top:20px">CAMBIO DESDE LA MEDICIÓN ANTERIOR</p>${inbodyComparison(inbody)}<p class="eyebrow" style="margin-top:20px">HISTORIAL IMPORTADO</p><div class="table-wrap"><table><thead><tr><th>Fecha</th><th>Peso</th><th>Músculo</th><th>Grasa</th><th>vs. anterior</th><th></th></tr></thead><tbody>${inbody.history.slice().reverse().map(reading => `<tr><td>${reading.date}</td><td>${reading.weight} kg</td><td>${reading.smm} kg</td><td>${reading.pbf}%</td><td class="delta-cell">${reading.delta ? `${deltaChip('weight', reading.delta.weight)}${deltaChip('smm', reading.delta.smm)}${deltaChip('pbf', reading.delta.pbf)}` : '<span class="delta neutral">primera</span>'}</td><td>${reading.documentId ? `<button class="secondary session-use" data-view-inbody="${reading.documentId}" data-inbody-client="${client.id}">Ver reporte</button>` : ''}<button class="secondary session-use" data-delete-inbody="${reading.id}">Eliminar</button></td></tr>`).join('')}</tbody></table></div>` : '<p class="empty">Aún no se ha confirmado una evaluación InBody.</p>'}${reviewNotice}<p class="eyebrow" style="margin-top:20px">SALDO DE SESIONES</p><div id="client-balances"><p class="empty">Cargando saldos…</p></div><p class="eyebrow" style="margin-top:20px">ASISTENCIA MENSUAL</p><div id="client-attendance"><p class="empty">Calculando cumplimiento…</p></div>${client.serviceType === 'rutinas' && !esDemo ? '<p class="eyebrow" style="margin-top:20px">RUTINAS DEL CICLO</p><div id="client-routine-cycle"><p class="empty">Cargando rutinas del ciclo…</p></div>' : ''}<p class="eyebrow" style="margin-top:20px">RUTINAS ENVIADAS</p><div id="client-routine-deliveries"><p class="empty">Cargando envíos de rutinas…</p></div><p class="eyebrow" style="margin-top:20px">HISTORIAL DE RUTINAS</p><div id="client-routine-history"><p class="empty">Cargando historial de rutinas…</p></div><p class="eyebrow" style="margin-top:20px">LESIONES Y PADECIMIENTOS</p><div id="client-conditions"><p class="empty">Cargando expediente clínico…</p></div><p class="eyebrow" style="margin-top:20px">FOTOS DE PROGRESO</p><div id="client-photos"><p class="empty">Cargando fotos…</p></div><p class="eyebrow" style="margin-top:20px">DOCUMENTOS PRIVADOS</p><div id="client-documents"><p class="empty">Cargando documentos del expediente…</p></div><div class="detail-actions"><button class="secondary" id="edit-client-contact">Editar contacto</button><button class="secondary" id="edit-client-plan">Editar plan y corte</button><button class="secondary" id="client-report">Informe de cumplimiento</button><button class="secondary" id="portal-link">${client.portalActive ? 'Enviar enlace de acceso' : 'Activar portal con enlace'}</button><button class="secondary" id="portal-access">${client.portalActive ? 'Poner contraseña a mano' : 'Activar con contraseña'}</button><button class="secondary" id="delete-client">Eliminar cliente</button></div><button class="primary wide-button" id="open-scan">${inbody ? 'Importar nuevo InBody' : 'Importar InBody'}</button>`;
+  box.innerHTML = `<p class="eyebrow">EXPEDIENTE</p><h2>${escapeHtml(client.name)}</h2><p style="color:#6f7b75;margin-top:-12px">${escapeHtml(client.goal)}<br>${commercialDescription}${notaPago}</p>${clientBillingSection(client)}<p class="eyebrow" style="margin-top:20px">PLAN DE FACTURACIÓN</p><div id="client-billing-subscriptions"><p class="empty">Cargando conceptos a facturar…</p></div><button type="button" class="secondary wide-button" id="add-billing-subscription-detail">Agregar concepto a facturar</button><p class="section-note">La factura automática se calcula con los conceptos de este plan de facturación, no con el monto mensual del perfil.</p>${inbody ? `<div class="metrics" style="grid-template-columns:repeat(2,1fr)"><article><span>Peso</span><strong>${inbody.weight} kg</strong></article><article><span>Masa muscular</span><strong>${inbody.smm} kg</strong></article><article><span>Grasa corporal</span><strong>${inbody.pbf}%</strong></article><article><span>InBody Score</span><strong>${inbody.score}/100</strong></article></div><p class="eyebrow" style="margin-top:20px">CAMBIO DESDE LA MEDICIÓN ANTERIOR</p>${inbodyComparison(inbody)}<p class="eyebrow" style="margin-top:20px">HISTORIAL IMPORTADO</p><div class="table-wrap"><table><thead><tr><th>Fecha</th><th>Peso</th><th>Músculo</th><th>Grasa</th><th>vs. anterior</th><th></th></tr></thead><tbody>${inbody.history.slice().reverse().map(reading => `<tr><td>${reading.date}</td><td>${reading.weight} kg</td><td>${reading.smm} kg</td><td>${reading.pbf}%</td><td class="delta-cell">${reading.delta ? `${deltaChip('weight', reading.delta.weight)}${deltaChip('smm', reading.delta.smm)}${deltaChip('pbf', reading.delta.pbf)}` : '<span class="delta neutral">primera</span>'}</td><td>${reading.documentId ? `<button class="secondary session-use" data-view-inbody="${reading.documentId}" data-inbody-client="${client.id}">Ver reporte</button>` : ''}<button class="secondary session-use" data-delete-inbody="${reading.id}">Eliminar</button></td></tr>`).join('')}</tbody></table></div>` : '<p class="empty">Aún no se ha confirmado una evaluación InBody.</p>'}${reviewNotice}<p class="eyebrow" style="margin-top:20px">SALDO DE SESIONES</p><div id="client-balances"><p class="empty">Cargando saldos…</p></div><p class="eyebrow" style="margin-top:20px">ASISTENCIA MENSUAL</p><div id="client-attendance"><p class="empty">Calculando cumplimiento…</p></div>${client.serviceType === 'rutinas' && !esDemo ? '<p class="eyebrow" style="margin-top:20px">RUTINAS DEL CICLO</p><div id="client-routine-cycle"><p class="empty">Cargando rutinas del ciclo…</p></div>' : ''}${!esDemo ? '<p class="eyebrow" style="margin-top:20px">RUTINAS SUELTAS</p><div id="client-routine-entitlements"><p class="empty">Cargando rutinas sueltas…</p></div>' : ''}<p class="eyebrow" style="margin-top:20px">RUTINAS ENVIADAS</p><div id="client-routine-deliveries"><p class="empty">Cargando envíos de rutinas…</p></div><p class="eyebrow" style="margin-top:20px">HISTORIAL DE RUTINAS</p><div id="client-routine-history"><p class="empty">Cargando historial de rutinas…</p></div><p class="eyebrow" style="margin-top:20px">LESIONES Y PADECIMIENTOS</p><div id="client-conditions"><p class="empty">Cargando expediente clínico…</p></div><p class="eyebrow" style="margin-top:20px">FOTOS DE PROGRESO</p><div id="client-photos"><p class="empty">Cargando fotos…</p></div><p class="eyebrow" style="margin-top:20px">DOCUMENTOS PRIVADOS</p><div id="client-documents"><p class="empty">Cargando documentos del expediente…</p></div><div class="detail-actions"><button class="secondary" id="edit-client-contact">Editar contacto</button><button class="secondary" id="edit-client-plan">Editar plan y corte</button><button class="secondary" id="client-report">Informe de cumplimiento</button><button class="secondary" id="portal-link">${client.portalActive ? 'Enviar enlace de acceso' : 'Activar portal con enlace'}</button><button class="secondary" id="portal-access">${client.portalActive ? 'Poner contraseña a mano' : 'Activar con contraseña'}</button><button class="secondary" id="delete-client">Eliminar cliente</button></div><button class="primary wide-button" id="open-scan">${inbody ? 'Importar nuevo InBody' : 'Importar InBody'}</button>`;
   box.innerHTML = box.innerHTML.replace('<p class="eyebrow" style="margin-top:20px">HISTORIAL DE RUTINAS</p>', '<p class="eyebrow" style="margin-top:20px">CONTRATO</p><div id="client-contracts"><p class="empty">Cargando contratos…</p></div><p class="eyebrow" style="margin-top:20px">HISTORIAL DE RUTINAS</p>');
   openModal(box);
   const detailActions = box.querySelector('.detail-actions');
@@ -5454,6 +5536,7 @@ function clientDetail(id) {
   }
   if (!esDemo) { balancesSection(document.getElementById('client-balances'), client); attendanceSection(document.getElementById('client-attendance'), client.id); }
   if (client.serviceType === 'rutinas' && !esDemo) routineCycleSection(document.getElementById('client-routine-cycle'), client);
+  if (!esDemo) routineEntitlementsSection(document.getElementById('client-routine-entitlements'), client);
   routineDeliveriesSection(document.getElementById('client-routine-deliveries'), `/api/clients/${encodeURIComponent(client.id)}/routine-deliveries`);
   clientContractsSection(document.getElementById('client-contracts'), client);
   routineHistorySection(document.getElementById('client-routine-history'), client);
@@ -5598,7 +5681,7 @@ document.querySelectorAll('[data-view-go]').forEach(button => button.addEventLis
 // Documento por cobrar con número FAC-. Módulo interno: hoy convive con el
 // sistema anterior y NO cambia lo que éste factura. El dinero recibido (cobros)
 // se registra aparte (1B-3).
-const newBillingKinds = { mensual: 'Mensualidad', credito: 'A crédito', clase_suelta: 'Clase suelta', paquete: 'Paquete', manual: 'Manual' };
+const newBillingKinds = { mensual: 'Mensualidad', credito: 'A crédito', clase_suelta: 'Clase suelta', rutina_suelta: 'Rutina suelta', paquete: 'Paquete', manual: 'Manual' };
 const newBillingStatusLabels = { pendiente: 'Pago pendiente', parcial: 'Pago parcial', pagada: 'Pagada', anulada: 'Anulada' };
 const newBillingStatusClass = { pendiente: 'pago-pendiente', parcial: 'parcial', pagada: 'pagada', anulada: 'anulada' };
 const newBillingFilters = { status: 'activa', clientId: '', month: '', cutDay: '' };
@@ -7141,6 +7224,15 @@ function renderPortalDemo() {
   document.querySelectorAll('#portal-dashboard, #portal-calendar, #portal-billing, #portal-reports').forEach(view => { view.hidden = true; });
 }
 
+function portalRoutineEntitlementsSection() {
+  const list = document.getElementById('portal-routines-list'); if (!list) return;
+  api('/api/portal/routine-entitlements').then(items => {
+    let target = document.getElementById('portal-routine-entitlements');
+    if (!Array.isArray(items) || !items.length) { target?.remove(); return; }
+    if (!target) { list.insertAdjacentHTML('beforebegin', '<section class="card portal-routine-entitlements" id="portal-routine-entitlements"></section>'); target = document.getElementById('portal-routine-entitlements'); }
+    target.innerHTML = `<p class="eyebrow">MIS RUTINAS SUELTAS</p>${items.map(item => routineEntitlementCard(item, 'client')).join('')}`;
+  }).catch(() => {});
+}
 function portalRoutineCycleSection(client) {
   if (client?.service_type !== 'rutinas') return;
   const list = document.getElementById('portal-routines-list'); if (!list) return;
@@ -7263,6 +7355,7 @@ function renderPortal() {
   document.getElementById('portal-routines-list').innerHTML = portalData.routines.length ? portalData.routines.map(portalRoutineCard).join('') : '<p class="empty">La entrenadora todavía no te ha asignado una rutina.</p>';
   portalRoutineHistoryMarkup();
   portalRoutineCycleSection(client);
+  portalRoutineEntitlementsSection();
   const ownSessions = new Map(portalData.sessions.map(item => [item.id, portalSession(item)]));
   renderPortalCalendar(ownSessions);
   document.getElementById('portal-plan').innerHTML = `<span class="commercial-label ${client.billing_model === 'package' ? 'package-label' : ''}">${client.payment_mode === 'no_anticipado' ? 'Crédito por sesión' : client.billing_model === 'package' ? 'Paquete' : 'Mensualidad'}</span><div><h3>${escapeHtml(client.plan_name || 'Plan personalizado')}</h3><p>${client.payment_mode === 'no_anticipado' ? `${money.format(Number(client.credit_session_price || 25))} por sesión · corte día ${client.billing_cutoff_day}` : `${money.format(Number(client.standard_price))}${client.billing_model === 'monthly' ? ` · corte día ${client.billing_cutoff_day}` : ` · ${client.sessions_included || 0} sesiones`}`}</p></div>`;
@@ -7555,9 +7648,9 @@ async function mostrarRutinaPublica(token) {
           : proximas.length ? `<p class="portal-offer-inline">Tus próximas clases durante el viaje: ${proximas.slice(0, 4).map(item => `${fechaCorta(`${item.dia}T12:00:00-05:00`)} ${escapeHtml(item.hora)}`).join(' · ')}. Confirma tu rutina <b>el día de cada clase</b> para que cuente.</p>` : ''}
         <div class="routine-timer" id="public-timer"><span class="routine-timer-display" id="public-reloj">00:00</span><button type="button" class="primary routine-timer-button" id="public-toggle">▶ Iniciar rutina</button></div>
         <div class="exercise-preview">${exerciseRows(ejercicios, catalogo, 'pub')}</div>
-        <div id="public-final">${vista.completedToday ? `<p class="portal-payment-ok">Ya completaste esta rutina hoy. ${vista.serviceType === 'rutinas' ? `Puedes hacer la repetición n.º ${vista.nextRunNumber}.` : '¡Gracias!'}</p>` : ''}
+        <div id="public-final">${vista.completedToday ? `<p class="portal-payment-ok">Ya completaste esta rutina hoy. ${(vista.repeatable || vista.serviceType === 'rutinas') ? `Puedes hacer la repetición n.º ${vista.nextRunNumber}.` : '¡Gracias!'}</p>` : ''}
           <label class="completion-percent public-porcentaje"><input id="public-pct" type="number" min="1" max="100" value="100" /><span>% completado</span></label>
-          <button type="button" class="primary wide-button" id="public-terminar">${vista.completedToday && vista.serviceType === 'rutinas' ? `Completar repetición n.º ${vista.nextRunNumber}` : 'Terminé mi rutina'}</button></div>
+          <button type="button" class="primary wide-button" id="public-terminar">${vista.completedToday && (vista.repeatable || vista.serviceType === 'rutinas') ? `Completar repetición n.º ${vista.nextRunNumber}` : 'Terminé mi rutina'}</button></div>
         <small class="public-vigencia">Este enlace vale hasta el ${venceTexto(vista.expiresAt)}</small>
       </article>`;
     const reloj = () => { try { return JSON.parse(localStorage.getItem(claveReloj) || 'null'); } catch { return null; } };

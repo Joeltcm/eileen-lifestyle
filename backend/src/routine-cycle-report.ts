@@ -58,7 +58,7 @@ export async function routineCycleReport(clientId: string, offset: number, scope
     SELECT ra.id::text AS id, ra.routine_id::text AS routine_id, COALESCE(r.root_routine_id, r.id)::text AS root_id,
       r.title, ra.starts_on::text AS starts_on, ra.due_on::text AS due_on
     FROM routine_assignments ra JOIN routines r ON r.id = ra.routine_id
-    WHERE ra.client_id = ${clientId} AND ra.starts_on >= ${cycle.cycleStart}::date AND ra.starts_on <= ${cycle.cycleEnd}::date
+    WHERE ra.client_id = ${clientId} AND ra.entitlement_id IS NULL AND ra.starts_on >= ${cycle.cycleStart}::date AND ra.starts_on <= ${cycle.cycleEnd}::date
     ORDER BY ra.starts_on, r.title` as unknown as Row[];
 
   const deliveries = await sql`
@@ -75,6 +75,7 @@ export async function routineCycleReport(clientId: string, offset: number, scope
       COALESCE(NULLIF(rc.elapsed_seconds, 0), rc.duration_seconds, 0) AS seconds, rc.feeling, rc.difficulty
     FROM routine_completions rc JOIN routines r ON r.id = rc.routine_id
     WHERE rc.client_id = ${clientId} AND rc.completion_percent > 0
+      AND NOT EXISTS (SELECT 1 FROM routine_assignments x WHERE x.id = rc.assignment_id AND x.entitlement_id IS NOT NULL)
       AND rc.completed_on >= ${cycle.cycleStart}::date AND rc.completed_on <= ${cycle.cycleEnd}::date
     ORDER BY rc.completed_on, rc.completed_at NULLS FIRST, rc.run_number` as unknown as Row[];
 
@@ -138,7 +139,7 @@ export async function routineCycleReport(clientId: string, offset: number, scope
     const [row] = await sql`
       SELECT count(DISTINCT COALESCE(r.root_routine_id, r.id))::int AS n
       FROM routine_assignments ra JOIN routines r ON r.id = ra.routine_id
-      WHERE ra.client_id = ${clientId} AND ra.starts_on >= ${nextCycle.cycleStart}::date AND ra.starts_on <= ${nextCycle.cycleEnd}::date`;
+      WHERE ra.client_id = ${clientId} AND ra.entitlement_id IS NULL AND ra.starts_on >= ${nextCycle.cycleStart}::date AND ra.starts_on <= ${nextCycle.cycleEnd}::date`;
     nextSent = Number(row?.n || 0);
   }
 

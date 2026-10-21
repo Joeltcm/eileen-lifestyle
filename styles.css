@@ -1002,3 +1002,6 @@ body:has(#portal-routines.active) .portal-weight-fab{display:none}
 /* Rutinas hechas en el calendario general */
 .session-chip.rutina-hecha{background:var(--mint,#dde9df);color:var(--ink,#3d3238);border:1px dashed var(--line,#e5e8df)}.month-routine{display:block;color:var(--ink-2,#594751);font-weight:600}.day-session.rutina-hecha{border-left:3px solid var(--ink,#3d3238)}.session-state.rutina-hecha{background:var(--mint,#dde9df);color:var(--ink,#3d3238)}.routine-runs-day{margin-top:14px;display:grid;gap:8px}.routine-runs-day .eyebrow{margin:0}
 .calendar-leyenda .ley.rutina{background:var(--mint,#dde9df);border:1px dashed var(--line,#e5e8df)}
+
+/* Rutinas sueltas */
+.entitlement-card{border:1px solid var(--line);border-radius:14px;padding:10px 12px;margin-bottom:8px;display:grid;gap:4px;min-width:0}.entitlement-card header{display:flex;justify-content:space-between;gap:8px;align-items:center}.entitlement-card small{color:var(--muted);overflow-wrap:anywhere}.entitlement-card.cancelled,.entitlement-card.expired{opacity:.7}.entitlement-stats{font-size:13px}.entitlement-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:6px}.entitlement-actions button{min-height:44px;flex:1 1 140px}

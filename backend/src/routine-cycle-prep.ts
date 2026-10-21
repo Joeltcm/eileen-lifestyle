@@ -36,7 +36,7 @@ export async function routineCyclePrep(today: string, ownerId?: string): Promise
     const [row] = await sql`
       SELECT count(DISTINCT COALESCE(r.root_routine_id, r.id))::int AS n
       FROM routine_assignments ra JOIN routines r ON r.id = ra.routine_id
-      WHERE ra.client_id = ${client.id} AND ra.starts_on >= ${target.cycleStart}::date AND ra.starts_on <= ${target.cycleEnd}::date`;
+      WHERE ra.client_id = ${client.id} AND ra.entitlement_id IS NULL AND ra.starts_on >= ${target.cycleStart}::date AND ra.starts_on <= ${target.cycleEnd}::date`;
     const assigned = Number(row?.n || 0);
     if (stage === 'DAY0' ? assigned > 0 : assigned >= current.quota) continue;
     const cutoffDate = stage === 'DAY0' ? today : current.nextCycleStart;

@@ -744,7 +744,7 @@ app.get('/api/billing/recurring/status', { preHandler: requireStaff }, async req
 // beneficiario. Estas rutas NO leen ni escriben el sistema anterior (`invoices`), no
 // abren saldos y no tocan el precio ni la membresía de ningún cliente. El dinero
 // recibido (cobros) y su aplicación llegan en 1B-3.
-const billingInvoiceKinds = ['mensual', 'credito', 'clase_suelta', 'paquete', 'manual'] as const;
+const billingInvoiceKinds = ['mensual', 'credito', 'clase_suelta', 'paquete', 'manual', 'rutina_suelta'] as const;
 const billingInvoiceLineInput = z.object({
   beneficiaryClientId: z.string().uuid(),
   description: z.string().trim().min(1).max(200).optional(),
@@ -923,7 +923,7 @@ app.post('/api/billing/invoices', { preHandler: requireStaff }, async (request, 
   const input = billingInvoiceInput.parse(request.body);
   const issuedOn = input.issuedOn ?? fechaDeNegocioPanama();
   const cycleStart = input.cycleStart ?? issuedOn;
-  const puntual = input.kind === 'clase_suelta' || input.kind === 'manual';
+  const puntual = input.kind === 'clase_suelta' || input.kind === 'manual' || input.kind === 'rutina_suelta';
   if (input.kind === 'paquete' && !input.cycleDays && !input.cycleEnd) {
     return reply.code(400).send({ error: 'Un paquete necesita los días del ciclo o su fecha final' });
   }
@@ -1004,7 +1004,10 @@ app.post('/api/billing/invoices/:id/void', { preHandler: requireStaff }, async (
       SELECT count(*)::int AS n FROM billing_payment_applications WHERE invoice_id = ${id} AND reversed_at IS NULL`;
     if (n > 0) return { error: 409 as const, message: 'La factura tiene cobros aplicados: revierta primero esas aplicaciones, con su motivo' };
     await transaction`UPDATE billing_invoices SET status = 'anulada', void_reason = ${reason}, voided_at = now(), voided_by = ${auth.sub} WHERE id = ${id}`;
-    await auditBilling(transaction, auth.sub, auth.sub, 'VOID_INVOICE', 'invoice', id, { code: billingCode(invoice.number), reason });
+    // Una factura de rutinas sueltas anulada deja sin efecto su bono: las rutinas dejan de estar disponibles.
+    const bonosAnulados = await transaction`UPDATE routine_entitlements SET status = 'cancelled', updated_at = now() WHERE invoice_id = ${id} AND status = 'active' RETURNING id`;
+    for (const bono of bonosAnulados) await transaction`UPDATE routine_assignments SET active = false, ends_on = (now() AT TIME ZONE 'America/Panama')::date WHERE entitlement_id = ${bono.id} AND active = true`;
+    await auditBilling(transaction, auth.sub, auth.sub, 'VOID_INVOICE', 'invoice', id, { code: billingCode(invoice.number), reason, routineEntitlementsCancelled: bonosAnulados.length });
     return { number: Number(invoice.number) };
   });
   if ('error' in result) {
@@ -1344,7 +1347,7 @@ const importManifestInput = z.object({
   name: z.string().trim().min(1).max(200),
   entries: z.array(z.object({
     key: z.string().trim().min(1).max(80), label: z.string().trim().min(1).max(200), payer: z.string().trim().min(1).max(200),
-    kind: z.enum(['mensual', 'credito', 'clase_suelta', 'paquete', 'manual']),
+    kind: z.enum(['mensual', 'credito', 'clase_suelta', 'paquete', 'manual', 'rutina_suelta']),
     cycleStart: importDate, cycleEnd: importDate, cutDay: z.coerce.number().int().min(1).max(31).optional(),
     issuedOn: importDate.optional(), dueOn: importDate.optional(), amountFrom: z.literal('legacy').optional(), allowWithoutEvidence: z.string().trim().min(3).max(300).optional(),
     lines: z.array(z.object({
@@ -1608,7 +1611,7 @@ function incomePaymentsSource(ownerId: string) {
 // ── Estado de cuenta, reportes y aviso al beneficiario del módulo nuevo (1B-5) ──
 // Leen SOLO las tablas billing_*. El portal y los PDF pasan a leerlas cuando el estado operativo es `new` (tras el corte);
 // antes siguen leyendo el sistema anterior, para no mostrar nada a medias.
-const billingKindText: Record<string, string> = { mensual: 'Mensualidad', credito: 'Sesiones a crédito', paquete: 'Paquete', clase_suelta: 'Clase suelta', manual: 'Factura' };
+const billingKindText: Record<string, string> = { mensual: 'Mensualidad', credito: 'Sesiones a crédito', paquete: 'Paquete', clase_suelta: 'Clase suelta', rutina_suelta: 'Rutina suelta', manual: 'Factura' };
 const dmy = (iso: unknown) => { const [y, m, d] = String(iso).slice(0, 10).split('-'); return `${d}-${m}-${y}`; };
 const agingBucket = (daysOverdue: number) => daysOverdue <= 0 ? 'al_dia' : daysOverdue <= 7 ? '1-7' : daysOverdue <= 30 ? '8-30' : '31+';
 
@@ -4136,7 +4139,7 @@ const routineExerciseSchema = z.object({
   // Bloques o circuitos (J-113): el número de bloque y cuántas rondas se repite; sin ellos, el ejercicio va suelto con sus series.
   block: z.coerce.number().int().min(1).max(20).optional(), rounds: z.coerce.number().int().min(1).max(10).optional()
 });
-const routineSchema = z.object({ title: z.string().min(2), description: z.string().optional(), sessionsPerWeek: z.coerce.number().int().min(1).max(7), exercises: z.array(routineExerciseSchema).max(80).default([]), clientId: z.string().uuid().optional(), startsOn: z.string().date().nullable().optional(), dueOn: z.string().date().nullable().optional(), confirmRepeat: z.boolean().optional().default(false), confirmQuota: z.boolean().optional().default(false), confirmVersion: z.boolean().optional().default(false) });
+const routineSchema = z.object({ title: z.string().min(2), description: z.string().optional(), sessionsPerWeek: z.coerce.number().int().min(1).max(7), exercises: z.array(routineExerciseSchema).max(80).default([]), clientId: z.string().uuid().optional(), startsOn: z.string().date().nullable().optional(), dueOn: z.string().date().nullable().optional(), entitlementId: z.string().uuid().nullable().optional(), confirmRepeat: z.boolean().optional().default(false), confirmQuota: z.boolean().optional().default(false), confirmVersion: z.boolean().optional().default(false) });
 
 type RoutineDeliveryKind = 'assignment' | 'link' | 'offer' | 'travel_link' | 'new_version';
 type RoutineDeliveryRoutine = {
@@ -4177,20 +4180,41 @@ class RoutineQuotaError extends Error {
   }
 }
 
-type RoutineAssignmentDates = { startsOn: string; dueOn: string | null; dueOnAdjusted: boolean; cycle: ReturnType<typeof routineCycle> | null };
+type RoutineEntitlementWindow = { id: string; quantity: number; from: string; until: string };
+type RoutineAssignmentDates = { startsOn: string; dueOn: string | null; dueOnAdjusted: boolean; cycle: ReturnType<typeof routineCycle> | null; entitlement?: RoutineEntitlementWindow | null };
+class RoutineEntitlementError extends Error {}
+
+/** Una asignación con ventana: la de un plan de rutinas (su ciclo) o la que se hizo con cargo a un bono de rutinas sueltas (su desde-hasta). */
+const assignmentEntitlementId = (assignment: Record<string, unknown>) => (assignment.entitlement_id ?? assignment.assignment_entitlement_id ?? null) as string | null;
+const isWindowedAssignment = (assignment: Record<string, unknown>, client: Record<string, unknown> = assignment) => String(assignment.service_type ?? client.service_type ?? '') === 'rutinas' || Boolean(assignmentEntitlementId(assignment));
 
 /**
  * Applies the only date policy for routine-plan clients.  A due date after the
  * cycle does not make a routine disappear arbitrarily: it is brought back to
  * the cycle end and reported to the editor in the response.
  */
-async function routineAssignmentDates(transaction: TransactionSql, ownerId: string, clientId: string, startsOn: string | null | undefined, dueOn: string | null | undefined): Promise<RoutineAssignmentDates> {
+async function routineAssignmentDates(transaction: TransactionSql, ownerId: string, clientId: string, startsOn: string | null | undefined, dueOn: string | null | undefined, entitlementId?: string | null): Promise<RoutineAssignmentDates> {
   const [client] = await transaction`
     SELECT c.id, c.billing_cutoff_day, c.monthly_session_target, p.service_type, p.routines_per_month
     FROM clients c LEFT JOIN service_plans p ON p.id = c.plan_id
     WHERE c.id = ${clientId} AND c.owner_id = ${ownerId}
   `;
   if (!client) throw new Error('Cliente no encontrado');
+  if (entitlementId) {
+    // Con cargo a un bono de rutinas sueltas: manda su ventana desde-hasta, no el ciclo del plan.
+    const [bono] = await transaction`
+      SELECT id::text AS id, quantity, available_from::text AS available_from, available_until::text AS available_until, status
+      FROM routine_entitlements WHERE id = ${entitlementId} AND client_id = ${clientId} AND owner_id = ${ownerId}`;
+    if (!bono || bono.status !== 'active') throw new RoutineEntitlementError('Ese bono de rutinas sueltas no existe, no es de este cliente o fue anulado.');
+    const from = String(bono.available_from); const until = String(bono.available_until);
+    const wanted = startsOn || fechaDeNegocioPanama();
+    const start = wanted > from ? wanted : from;
+    const fmt = (value: string) => `${value.slice(8, 10)}-${value.slice(5, 7)}-${value.slice(0, 4)}`;
+    if (start > until) throw new RoutineEntitlementError(`La ventana de este bono terminó el ${fmt(until)}.`);
+    if (dueOn && dueOn < start) throw new RoutineEntitlementError('La fecha límite no puede ser anterior al inicio de la rutina.');
+    const adjusted = Boolean(dueOn && dueOn > until);
+    return { startsOn: start, dueOn: dueOn && dueOn <= until ? dueOn : until, dueOnAdjusted: adjusted, cycle: null, entitlement: { id: String(bono.id), quantity: Number(bono.quantity), from, until } };
+  }
   const start = startsOn || fechaDeNegocioPanama();
   if (client.service_type !== 'rutinas') return { startsOn: start, dueOn: dueOn ?? null, dueOnAdjusted: false, cycle: null };
   const cycle = routineCycle({
@@ -4214,6 +4238,8 @@ async function routineAssignmentDates(transaction: TransactionSql, ownerId: stri
 function routineAssignmentEffectiveDueOn(assignment: Record<string, unknown>, client: Record<string, unknown> = assignment): string | null {
   const serviceType = String(assignment.service_type ?? client.service_type ?? '');
   const dueOn = fechaDbTexto(assignment.due_on ?? assignment.assignment_due_on);
+  // Con cargo a un bono, manda su ventana: due_on nunca es nulo (restricción) y se actualiza junto con el bono.
+  if (assignmentEntitlementId(assignment)) return dueOn;
   if (serviceType !== 'rutinas') return dueOn;
   const startsOn = fechaDbTexto(assignment.starts_on ?? assignment.assignment_starts_on);
   if (!startsOn) return null;
@@ -4226,8 +4252,7 @@ function routineAssignmentEffectiveDueOn(assignment: Record<string, unknown>, cl
 }
 
 function routineAssignmentIsAvailable(assignment: Record<string, unknown>, client: Record<string, unknown> = assignment, today = fechaDeNegocioPanama()): boolean {
-  const serviceType = String(assignment.service_type ?? client.service_type ?? '');
-  if (serviceType !== 'rutinas') return true;
+  if (!isWindowedAssignment(assignment, client)) return true;
   const startsOn = fechaDbTexto(assignment.starts_on ?? assignment.assignment_starts_on);
   const endsOn = fechaDbTexto(assignment.ends_on ?? assignment.assignment_ends_on);
   const effectiveDueOn = routineAssignmentEffectiveDueOn(assignment, client);
@@ -4241,7 +4266,7 @@ function routineAssignmentIsAvailable(assignment: Record<string, unknown>, clien
  * ya entregaban sus rutas.
  */
 function routineRunDay(assignment: Record<string, unknown>, requestedDay: string): string {
-  return String(assignment.service_type || '') === 'rutinas' ? fechaDeNegocioPanama() : requestedDay;
+  return isWindowedAssignment(assignment) ? fechaDeNegocioPanama() : requestedDay;
 }
 
 /**
@@ -4295,11 +4320,22 @@ async function resolveRoutineRunNumber(transaction: TransactionSql, input: {
 }
 
 async function enforceRoutineQuota(transaction: TransactionSql, ownerId: string, clientId: string, routineId: string, dates: RoutineAssignmentDates, confirmQuota: boolean | undefined) {
+  if (dates.entitlement) {
+    // El cupo del bono son las rutinas vendidas; pasarse se confirma igual que el cupo del ciclo.
+    const [bono] = await transaction`
+      SELECT count(DISTINCT COALESCE(r.root_routine_id, r.id))::int AS assigned
+      FROM routine_assignments ra JOIN routines r ON r.id = ra.routine_id
+      WHERE ra.entitlement_id = ${dates.entitlement.id}
+        AND COALESCE(r.root_routine_id, r.id) <> COALESCE((SELECT root_routine_id FROM routines WHERE id = ${routineId}), ${routineId}::uuid)`;
+    const sent = Number(bono?.assigned || 0);
+    if (sent >= dates.entitlement.quantity && !confirmQuota) throw new RoutineQuotaError(dates.entitlement.quantity, sent, dates.entitlement.from, dates.entitlement.until);
+    return;
+  }
   if (!dates.cycle?.quota) return;
   const [count] = await transaction`
     SELECT count(DISTINCT COALESCE(r.root_routine_id, r.id))::int AS assigned
     FROM routine_assignments ra JOIN routines r ON r.id = ra.routine_id
-    WHERE ra.client_id = ${clientId} AND ra.active = true
+    WHERE ra.client_id = ${clientId} AND ra.active = true AND ra.entitlement_id IS NULL
       AND ra.starts_on >= ${dates.cycle.cycleStart}::date AND ra.starts_on <= ${dates.cycle.cycleEnd}::date
       AND COALESCE(r.root_routine_id, r.id) <> COALESCE((SELECT root_routine_id FROM routines WHERE id = ${routineId}), ${routineId}::uuid)
   `;
@@ -4631,10 +4667,10 @@ app.post('/api/routines', { preHandler: requireStaff }, async (request, reply) =
       const [created] = await transaction`INSERT INTO routines (id, owner_id, root_routine_id, title, description, sessions_per_week, exercises, exercises_hash) VALUES (${routineId}, ${auth.sub}, ${routineId}, ${input.title}, ${input.description || null}, ${input.sessionsPerWeek}, ${transaction.json(input.exercises)}, ${exercisesHash(input.exercises)}) RETURNING *`;
       if (input.clientId) {
         await assertDemoCanReceiveRoutine(transaction, input.clientId, created.id);
-        const dates = await routineAssignmentDates(transaction, auth.sub, input.clientId, input.startsOn, input.dueOn);
+        const dates = await routineAssignmentDates(transaction, auth.sub, input.clientId, input.startsOn, input.dueOn, input.entitlementId);
         await enforceRoutineQuota(transaction, auth.sub, input.clientId, created.id, dates, input.confirmQuota);
         const repeticionConfirmada = await rejectRecentRoutineRepeat(transaction, created as unknown as RoutineDeliveryRoutine, input.clientId, input.confirmRepeat, 'assignment');
-        const [assignment] = await transaction`INSERT INTO routine_assignments (routine_id, client_id, starts_on, due_on) SELECT ${created.id}, id, ${dates.startsOn}::date, ${dates.dueOn}::date FROM clients WHERE id = ${input.clientId} AND owner_id = ${auth.sub} RETURNING *`;
+        const [assignment] = await transaction`INSERT INTO routine_assignments (routine_id, client_id, starts_on, due_on, entitlement_id) SELECT ${created.id}, id, ${dates.startsOn}::date, ${dates.dueOn}::date, ${dates.entitlement?.id ?? null}::uuid FROM clients WHERE id = ${input.clientId} AND owner_id = ${auth.sub} RETURNING *`;
         if (assignment) await recordRoutineDelivery(transaction, { routine: created as unknown as RoutineDeliveryRoutine, clientId: assignment.client_id, kind: 'assignment', sentByUserId: auth.sub, dueOn: assignment.due_on, assignmentId: assignment.id, repeatConfirmed: repeticionConfirmada });
         Object.assign(created, { assignment_due_on_adjusted: dates.dueOnAdjusted, assignment_cycle: dates.cycle });
       }
@@ -4643,6 +4679,7 @@ app.post('/api/routines', { preHandler: requireStaff }, async (request, reply) =
   } catch (error) {
     if (error instanceof RoutineRepeatError) return reply.code(409).send({ code: error.code, message: error.message, repeats: error.repeats });
     if (error instanceof RoutineQuotaError) return reply.code(409).send({ code: error.code, message: error.message, quota: error.quota, assigned: error.assigned, cycleStart: error.cycleStart, cycleEnd: error.cycleEnd });
+    if (error instanceof RoutineEntitlementError) return reply.code(409).send({ error: error.message });
     throw error;
   }
   return reply.code(201).send(routine);
@@ -4734,10 +4771,10 @@ app.patch('/api/routines/:id', { preHandler: requireStaff }, async (request, rep
             ? (asignacion.due_on ? new Date(asignacion.due_on).toISOString().slice(0, 10) : null)
             : input.dueOn;
           const startsOn = new Date(asignacion.starts_on).toISOString().slice(0, 10);
-          const dates = await routineAssignmentDates(transaction, auth.sub, String(asignacion.client_id), startsOn, originalDueOn);
+          const dates = await routineAssignmentDates(transaction, auth.sub, String(asignacion.client_id), startsOn, originalDueOn, assignmentEntitlementId(asignacion));
           const [nuevaAsignacion] = await transaction`
-            INSERT INTO routine_assignments (routine_id, client_id, starts_on, due_on, active)
-            VALUES (${newId}, ${asignacion.client_id}, ${dates.startsOn}::date, ${dates.dueOn}::date, true)
+            INSERT INTO routine_assignments (routine_id, client_id, starts_on, due_on, active, entitlement_id)
+            VALUES (${newId}, ${asignacion.client_id}, ${dates.startsOn}::date, ${dates.dueOn}::date, true, ${dates.entitlement?.id ?? null}::uuid)
             RETURNING *
           `;
           await recordRoutineDelivery(transaction, { routine: versionada as unknown as RoutineDeliveryRoutine, clientId: nuevaAsignacion.client_id, kind: 'new_version', sentByUserId: auth.sub, dueOn: nuevaAsignacion.due_on, assignmentId: nuevaAsignacion.id });
@@ -4755,12 +4792,12 @@ app.patch('/api/routines/:id', { preHandler: requireStaff }, async (request, rep
       // actual debe permanecer intacta. La fecha sí puede cambiarse, pero sólo
       // en asignaciones activas de esta rutina y dentro de la transacción.
       if (input.clientId === undefined && (input.dueOn !== undefined || input.startsOn !== undefined)) {
-        const activas = await transaction`SELECT ra.id, ra.client_id, ra.starts_on FROM routine_assignments ra WHERE ra.routine_id = ${id} AND ra.active = true FOR UPDATE`;
+        const activas = await transaction`SELECT ra.id, ra.client_id, ra.starts_on, ra.entitlement_id FROM routine_assignments ra WHERE ra.routine_id = ${id} AND ra.active = true FOR UPDATE`;
         if (!activas.length) throw new RoutineDueDateError('Asigna la rutina a un cliente antes de ponerle fecha');
         for (const assignment of activas) {
           const existingStart = new Date(assignment.starts_on).toISOString().slice(0, 10);
           const [existingDue] = await transaction`SELECT due_on FROM routine_assignments WHERE id = ${assignment.id}`;
-          const dates = await routineAssignmentDates(transaction, auth.sub, String(assignment.client_id), input.startsOn === undefined ? existingStart : input.startsOn, input.dueOn === undefined ? (existingDue.due_on ? new Date(existingDue.due_on).toISOString().slice(0, 10) : null) : input.dueOn);
+          const dates = await routineAssignmentDates(transaction, auth.sub, String(assignment.client_id), input.startsOn === undefined ? existingStart : input.startsOn, input.dueOn === undefined ? (existingDue.due_on ? new Date(existingDue.due_on).toISOString().slice(0, 10) : null) : input.dueOn, assignmentEntitlementId(assignment));
           await transaction`UPDATE routine_assignments SET starts_on = ${dates.startsOn}::date, due_on = ${dates.dueOn}::date WHERE id = ${assignment.id}`;
           if (dates.dueOnAdjusted) Object.assign(updated, { assignment_due_on_adjusted: true, assignment_cycle: dates.cycle });
         }
@@ -4770,11 +4807,11 @@ app.patch('/api/routines/:id', { preHandler: requireStaff }, async (request, rep
       if (input.clientId !== undefined) {
         if (input.clientId) {
           await assertDemoCanReceiveRoutine(transaction, input.clientId, id);
-          const dates = await routineAssignmentDates(transaction, auth.sub, input.clientId, input.startsOn, input.dueOn);
+          const dates = await routineAssignmentDates(transaction, auth.sub, input.clientId, input.startsOn, input.dueOn, input.entitlementId);
           await enforceRoutineQuota(transaction, auth.sub, input.clientId, id, dates, input.confirmQuota);
           const repeticionConfirmada = await rejectRecentRoutineRepeat(transaction, updated as unknown as RoutineDeliveryRoutine, input.clientId, input.confirmRepeat, 'assignment');
           await transaction`UPDATE routine_assignments SET active = false, ends_on = current_date WHERE routine_id = ${id} AND active = true`;
-          const [assignment] = await transaction`INSERT INTO routine_assignments (routine_id, client_id, starts_on, due_on) SELECT ${id}, c.id, ${dates.startsOn}::date, ${dates.dueOn}::date FROM clients c WHERE c.id = ${input.clientId} AND c.owner_id = ${auth.sub} ON CONFLICT (routine_id, client_id, starts_on) DO UPDATE SET active = true, ends_on = null, due_on = EXCLUDED.due_on RETURNING *`;
+          const [assignment] = await transaction`INSERT INTO routine_assignments (routine_id, client_id, starts_on, due_on, entitlement_id) SELECT ${id}, c.id, ${dates.startsOn}::date, ${dates.dueOn}::date, ${dates.entitlement?.id ?? null}::uuid FROM clients c WHERE c.id = ${input.clientId} AND c.owner_id = ${auth.sub} ON CONFLICT (routine_id, client_id, starts_on) DO UPDATE SET active = true, ends_on = null, due_on = EXCLUDED.due_on, entitlement_id = EXCLUDED.entitlement_id RETURNING *`;
           if (assignment) await recordRoutineDelivery(transaction, { routine: updated as unknown as RoutineDeliveryRoutine, clientId: assignment.client_id, kind: 'assignment', sentByUserId: auth.sub, dueOn: assignment.due_on, assignmentId: assignment.id, repeatConfirmed: repeticionConfirmada });
           Object.assign(updated, { assignment_due_on_adjusted: dates.dueOnAdjusted, assignment_cycle: dates.cycle });
         } else {
@@ -4784,7 +4821,7 @@ app.patch('/api/routines/:id', { preHandler: requireStaff }, async (request, rep
       return updated;
     });
   } catch (error) {
-    if (error instanceof RoutineDueDateError) return reply.code(409).send({ error: error.message });
+    if (error instanceof RoutineDueDateError || error instanceof RoutineEntitlementError) return reply.code(409).send({ error: error.message });
     if (error instanceof RoutineVersionRequiredError) return reply.code(409).send({ code: error.code, message: error.message, clientCount: error.clientCount });
     if (error instanceof RoutineVersionStartedError) return reply.code(409).send({ code: error.code, message: error.message });
     if (error instanceof RoutineRepeatError) return reply.code(409).send({ code: error.code, message: error.message, repeats: error.repeats });
@@ -8936,7 +8973,7 @@ app.get('/api/portal/summary', { preHandler: requireAuth }, async (request, repl
         END::numeric(12,2) AS balance
       FROM invoices WHERE client_id = ${client.id} ORDER BY COALESCE(issued_on, due_on) DESC
     `,
-    sql`SELECT ra.id AS assignment_id, ra.starts_on, ra.due_on, r.id, r.title, r.description, r.version, r.root_routine_id, r.sessions_per_week, r.exercises
+    sql`SELECT ra.id AS assignment_id, ra.entitlement_id, ra.starts_on, ra.due_on, r.id, r.title, r.description, r.version, r.root_routine_id, r.sessions_per_week, r.exercises
       FROM routine_assignments ra JOIN routines r ON r.id = ra.routine_id
       WHERE ra.client_id = ${client.id} AND ra.active = true AND r.archived_at IS NULL
         AND (ra.ends_on IS NULL OR ra.ends_on >= (now() AT TIME ZONE 'America/Panama')::date)
@@ -9259,6 +9296,153 @@ app.get('/api/routine-runs', { preHandler: requireStaff }, async request => {
 
 // Bitácora del ciclo de rutinas: enviadas vs hechas, calidad y línea de tiempo (decisión 9). La misma función sirve al portal.
 const routineCycleQuerySchema = z.object({ offset: z.coerce.number().int().min(-24).max(0).default(0) });
+// ── Rutinas sueltas ─────────────────────────────────────────────────────────────
+// Eileen vende 1 o un grupo de rutinas con una ventana desde-hasta, como una venta puntual (igual que la clase suelta):
+// se crea el bono (routine_entitlements) y, si hay importe, su factura 'rutina_suelta'. Las rutinas se asignan "con cargo al bono"
+// y viven solo dentro de su ventana; no tocan el plan, el cupo del ciclo ni los saldos del cliente.
+const routineEntitlementInput = z.object({
+  quantity: z.coerce.number().int().min(1).max(100),
+  unitAmount: z.coerce.number().min(0).max(100000),
+  availableFrom: z.string().date(),
+  availableUntil: z.string().date(),
+  notes: z.string().trim().max(500).optional(),
+  invoice: z.boolean().default(true),
+  payerClientId: z.string().uuid().optional()
+}).refine(value => value.availableUntil >= value.availableFrom, { message: 'La fecha final no puede ser anterior a la inicial' })
+  .refine(value => (Date.parse(value.availableUntil) - Date.parse(value.availableFrom)) / 86_400_000 <= 366, { message: 'La ventana máxima es de un año' });
+const fechaCortaServidor = (value: string) => `${value.slice(8, 10)}-${value.slice(5, 7)}-${value.slice(0, 4)}`;
+
+async function routineEntitlementList(clientId: string, scope: { ownerId?: string; hideCancelled?: boolean; sinceDays?: number }) {
+  const today = fechaDeNegocioPanama();
+  const sinceDays = scope.sinceDays ?? 0;
+  const rows = await sql`
+    SELECT e.id::text AS id, e.quantity, e.available_from::text AS available_from, e.available_until::text AS available_until, e.unit_amount,
+      e.status, e.notes, e.created_at, e.invoice_id::text AS invoice_id, bi.number AS invoice_number, bi.status AS invoice_status, bi.total AS invoice_total,
+      (SELECT count(DISTINCT COALESCE(r.root_routine_id, r.id)) FROM routine_assignments ra JOIN routines r ON r.id = ra.routine_id WHERE ra.entitlement_id = e.id)::int AS sent,
+      (SELECT count(*) FROM routine_completions rc JOIN routine_assignments ra ON ra.id = rc.assignment_id WHERE ra.entitlement_id = e.id AND rc.completion_percent > 0)::int AS done,
+      (SELECT count(DISTINCT COALESCE(r.root_routine_id, r.id)) FROM routine_completions rc JOIN routine_assignments ra ON ra.id = rc.assignment_id JOIN routines r ON r.id = rc.routine_id WHERE ra.entitlement_id = e.id AND rc.completion_percent > 0)::int AS distinct_done
+    FROM routine_entitlements e LEFT JOIN billing_invoices bi ON bi.id = e.invoice_id
+    WHERE e.client_id = ${clientId} ${scope.ownerId ? sql`AND e.owner_id = ${scope.ownerId}` : sql``}
+      ${scope.hideCancelled ? sql`AND e.status <> 'cancelled'` : sql``}
+      ${sinceDays ? sql`AND e.available_until >= ((now() AT TIME ZONE 'America/Panama')::date - ${sinceDays}::int)` : sql``}
+    ORDER BY e.available_until DESC, e.created_at DESC`;
+  return rows.map(row => {
+    const status = row.status === 'cancelled' ? 'cancelled' : today < String(row.available_from) ? 'upcoming' : today > String(row.available_until) ? 'expired' : 'active';
+    const sent = Number(row.sent) || 0; const done = Number(row.done) || 0;
+    return {
+      id: row.id, quantity: Number(row.quantity), availableFrom: row.available_from, availableUntil: row.available_until, unitAmount: Number(row.unit_amount),
+      status, notes: row.notes || null, createdAt: row.created_at,
+      sent, remaining: Math.max(0, Number(row.quantity) - sent), done, distinctDone: Number(row.distinct_done) || 0, repeats: Math.max(0, done - (Number(row.distinct_done) || 0)),
+      invoice: row.invoice_id ? { id: row.invoice_id, code: billingCode(row.invoice_number), status: row.invoice_status, total: Number(row.invoice_total) } : null
+    };
+  });
+}
+
+app.get('/api/clients/:clientId/routine-entitlements', { preHandler: requireStaff }, async (request, reply) => {
+  const auth = request.user as AuthUser;
+  const clientId = z.string().uuid().parse((request.params as { clientId: string }).clientId);
+  const [client] = await sql`SELECT id FROM clients WHERE id = ${clientId} AND owner_id = ${auth.sub}`;
+  if (!client) return reply.code(404).send({ error: 'Cliente no encontrado' });
+  return routineEntitlementList(clientId, { ownerId: auth.sub });
+});
+
+app.post('/api/clients/:clientId/routine-entitlements', { preHandler: requireStaff }, async (request, reply) => {
+  const auth = request.user as AuthUser;
+  const clientId = z.string().uuid().parse((request.params as { clientId: string }).clientId);
+  const input = routineEntitlementInput.parse(request.body);
+  const today = fechaDeNegocioPanama();
+  if (input.availableUntil < today) return reply.code(400).send({ error: 'La ventana ya terminó: la fecha final debe ser hoy o posterior' });
+  const payerId = input.payerClientId ?? clientId;
+  const people = await sql`SELECT id::text AS id, billing_cutoff_day, service_mode FROM clients WHERE owner_id = ${auth.sub} AND id IN ${sql([...new Set([clientId, payerId])])}`;
+  if (people.length !== new Set([clientId, payerId]).size) return reply.code(404).send({ error: 'Cliente no encontrado' });
+  if (people.some(person => person.service_mode === 'demo')) return reply.code(409).send({ error: 'Los clientes demo no admiten ventas ni facturas: conviértelo primero a un plan de pago.' });
+  const payer = people.find(person => person.id === payerId)!;
+  const total = desdeCentavos(centavos(input.quantity * input.unitAmount));
+  const facturar = input.invoice && total > 0;
+  const created = await sql.begin(async transaction => {
+    const [bono] = await transaction`
+      INSERT INTO routine_entitlements (owner_id, client_id, quantity, available_from, available_until, unit_amount, notes, created_by)
+      VALUES (${auth.sub}, ${clientId}, ${input.quantity}, ${input.availableFrom}::date, ${input.availableUntil}::date, ${input.unitAmount}, ${input.notes || null}, ${auth.sub})
+      RETURNING id::text AS id`;
+    let invoice: { id: string; code: string; total: number } | null = null;
+    if (facturar) {
+      const cutDay = Number(payer.billing_cutoff_day) || Number(today.slice(8, 10));
+      const [{ n }] = await transaction`SELECT billing_next_number(${auth.sub}) AS n`;
+      const [factura] = await transaction`
+        INSERT INTO billing_invoices (owner_id, number, payer_client_id, kind, origin, cycle_start, cycle_end, cut_day, issued_on, due_on, total, notes, created_by)
+        VALUES (${auth.sub}, ${n}, ${payerId}, 'rutina_suelta', 'manual', ${today}, ${today}, ${cutDay}, ${today}, ${today}, ${total}, ${input.notes || null}, ${auth.sub})
+        RETURNING id::text AS id, number`;
+      const descripcion = `Rutinas sueltas · ${input.quantity} · del ${fechaCortaServidor(input.availableFrom)} al ${fechaCortaServidor(input.availableUntil)}`;
+      await transaction`
+        INSERT INTO billing_invoice_lines (invoice_id, beneficiary_client_id, plan_id, line_type, description, quantity, unit_amount, amount, sessions_reference)
+        VALUES (${factura.id}, ${clientId}, NULL, 'plan', ${descripcion}, ${input.quantity}, ${input.unitAmount}, ${total}, NULL)`;
+      await auditBilling(transaction, auth.sub, auth.sub, 'CREATE_INVOICE', 'invoice', factura.id, { code: billingCode(factura.number), payerClientId: payerId, kind: 'rutina_suelta', total, routineEntitlementId: bono.id });
+      await transaction`UPDATE routine_entitlements SET invoice_id = ${factura.id} WHERE id = ${bono.id}`;
+      invoice = { id: factura.id, code: billingCode(factura.number), total };
+    }
+    return { id: bono.id, invoice };
+  });
+  return reply.code(201).send(created);
+});
+
+const routineEntitlementPatch = z.object({
+  quantity: z.coerce.number().int().min(1).max(100).optional(),
+  availableFrom: z.string().date().optional(),
+  availableUntil: z.string().date().optional(),
+  notes: z.string().trim().max(500).nullable().optional()
+}).refine(value => Object.keys(value).length > 0, { message: 'Indica qué cambiar' });
+app.patch('/api/routine-entitlements/:id', { preHandler: requireStaff }, async (request, reply) => {
+  const auth = request.user as AuthUser;
+  const id = z.string().uuid().parse((request.params as { id: string }).id);
+  const input = routineEntitlementPatch.parse(request.body);
+  const result = await sql.begin(async transaction => {
+    const [bono] = await transaction`
+      SELECT id::text AS id, client_id::text AS client_id, quantity, available_from::text AS available_from, available_until::text AS available_until, status, notes
+      FROM routine_entitlements WHERE id = ${id} AND owner_id = ${auth.sub} FOR UPDATE`;
+    if (!bono) return { error: 404 as const, message: 'Bono no encontrado' };
+    if (bono.status !== 'active') return { error: 409 as const, message: 'El bono está anulado' };
+    const from = input.availableFrom ?? String(bono.available_from); const until = input.availableUntil ?? String(bono.available_until);
+    const quantity = input.quantity ?? Number(bono.quantity);
+    if (until < from) return { error: 400 as const, message: 'La fecha final no puede ser anterior a la inicial' };
+    if ((Date.parse(until) - Date.parse(from)) / 86_400_000 > 366) return { error: 400 as const, message: 'La ventana máxima es de un año' };
+    const [{ sent }] = await transaction`
+      SELECT count(DISTINCT COALESCE(r.root_routine_id, r.id))::int AS sent FROM routine_assignments ra JOIN routines r ON r.id = ra.routine_id WHERE ra.entitlement_id = ${id}`;
+    if (quantity < Number(sent)) return { error: 409 as const, message: `Ya enviaste ${sent} rutinas con cargo a este bono; no puede quedar con menos` };
+    await transaction`
+      UPDATE routine_entitlements SET quantity = ${quantity}, available_from = ${from}::date, available_until = ${until}::date,
+        notes = ${(input.notes === undefined ? bono.notes : input.notes) ?? null}::text, updated_at = now() WHERE id = ${id}`;
+    // La ventana nueva viaja con las rutinas ya enviadas: lo que se amplía (o recorta) se refleja en su fecha límite.
+    await transaction`UPDATE routine_assignments SET due_on = ${until}::date, starts_on = GREATEST(starts_on, ${from}::date) WHERE entitlement_id = ${id} AND active = true`;
+    return { ok: true as const, clientId: String(bono.client_id) };
+  });
+  if ('error' in result && result.error) return reply.code(result.error).send({ error: result.message });
+  return (await routineEntitlementList(result.clientId, { ownerId: auth.sub })).find(item => item.id === id);
+});
+
+app.post('/api/routine-entitlements/:id/cancel', { preHandler: requireStaff }, async (request, reply) => {
+  const auth = request.user as AuthUser;
+  const id = z.string().uuid().parse((request.params as { id: string }).id);
+  const result = await sql.begin(async transaction => {
+    const [bono] = await transaction`
+      SELECT e.id, e.status, bi.number AS invoice_number, bi.status AS invoice_status
+      FROM routine_entitlements e LEFT JOIN billing_invoices bi ON bi.id = e.invoice_id WHERE e.id = ${id} AND e.owner_id = ${auth.sub} FOR UPDATE OF e`;
+    if (!bono) return { error: 404 as const, message: 'Bono no encontrado' };
+    if (bono.status === 'cancelled') return { error: 409 as const, message: 'El bono ya está anulado' };
+    await transaction`UPDATE routine_entitlements SET status = 'cancelled', updated_at = now() WHERE id = ${id}`;
+    await transaction`UPDATE routine_assignments SET active = false, ends_on = (now() AT TIME ZONE 'America/Panama')::date WHERE entitlement_id = ${id} AND active = true`;
+    return { cancelled: true as const, invoice: bono.invoice_number ? { code: billingCode(bono.invoice_number), status: String(bono.invoice_status) } : null };
+  });
+  if ('error' in result && result.error) return reply.code(result.error).send({ error: result.message });
+  return result;
+});
+
+// Lo que ve el cliente: sus propios bonos (no los anulados), con su ventana y cuántas rutinas lleva.
+app.get('/api/portal/routine-entitlements', { preHandler: requireAuth }, async (request, reply) => {
+  const auth = request.user as AuthUser; if (auth.role !== 'client') return reply.code(403).send({ error: 'Acceso exclusivo para clientes' });
+  const client = await portalClient(auth.sub); if (!client) return reply.code(404).send({ error: 'Portal de cliente no encontrado' });
+  return (await routineEntitlementList(String(client.id), { hideCancelled: true, sinceDays: 30 })).map(({ invoice, notes, unitAmount, ...visible }) => visible);
+});
+
 // Lo mismo que ve Eileen, pero con el identificador del token: el cliente solo puede pedir SU ciclo.
 app.get('/api/portal/routine-cycle', { preHandler: requireAuth }, async (request, reply) => {
   const auth = request.user as AuthUser; if (auth.role !== 'client') return reply.code(403).send({ error: 'Acceso exclusivo para clientes' });
@@ -9318,14 +9502,14 @@ app.post('/api/portal/routine-completions', { preHandler: requireAuth }, async (
   const auth = request.user as AuthUser; if (auth.role !== 'client') return reply.code(403).send({ error: 'Acceso exclusivo para clientes' });
   const input = routineCompletionSchema.parse(request.body); const client = await portalClient(auth.sub); if (!client) return reply.code(404).send({ error: 'Portal de cliente no encontrado' });
   const [assignment] = await sql`
-    SELECT ra.id, ra.starts_on, ra.due_on, ra.ends_on, c.billing_cutoff_day, c.monthly_session_target, p.service_type, p.routines_per_month
+    SELECT ra.id, ra.entitlement_id, ra.starts_on, ra.due_on, ra.ends_on, c.billing_cutoff_day, c.monthly_session_target, p.service_type, p.routines_per_month
     FROM routine_assignments ra JOIN clients c ON c.id = ra.client_id LEFT JOIN service_plans p ON p.id = c.plan_id
     WHERE ra.routine_id = ${input.routineId} AND ra.client_id = ${client.id} AND ra.active = true
   `;
   if (!assignment || !routineAssignmentIsAvailable(assignment as Record<string, unknown>)) return reply.code(404).send({ error: 'La rutina no está asignada a este cliente' });
   const completion = await sql.begin(async transaction => {
     const completedOn = routineRunDay(assignment as Record<string, unknown>, input.completedOn);
-    const run = await resolveRoutineRunNumber(transaction, { routineId: input.routineId, clientId: String(client.id), completedOn, requestedRunNumber: input.runNumber, allowRepeat: assignment.service_type === 'rutinas' });
+    const run = await resolveRoutineRunNumber(transaction, { routineId: input.routineId, clientId: String(client.id), completedOn, requestedRunNumber: input.runNumber, allowRepeat: isWindowedAssignment(assignment as Record<string, unknown>) });
     const [saved] = await transaction`
       INSERT INTO routine_completions (routine_id, client_id, completed_on, run_number, completion_percent, completed_at, assignment_id, marked_by_user_id, notes, duration_seconds)
       VALUES (${input.routineId}, ${client.id}, ${completedOn}, ${run.runNumber}, ${input.completionPercent}, CASE WHEN ${input.completionPercent} > 0 THEN now() ELSE NULL END, ${assignment.id}, ${auth.sub}, ${input.notes || null}, ${input.durationSeconds ?? null})
@@ -9383,11 +9567,11 @@ async function notifyRoutineActivity(input: {
 app.post('/api/portal/routine-activity', { preHandler: requireAuth }, async (request, reply) => {
   const auth = request.user as AuthUser; if (auth.role !== 'client') return reply.code(403).send({ error: 'Acceso exclusivo para clientes' });
   const input = routineActivitySchema.parse(request.body); const client = await portalClient(auth.sub); if (!client) return reply.code(404).send({ error: 'Portal de cliente no encontrado' });
-  const [routine] = await sql`SELECT ra.id AS assignment_id, r.title, c.id AS client_id, c.full_name, c.owner_id, c.service_mode, ra.starts_on, ra.due_on, c.billing_cutoff_day, c.monthly_session_target, p.service_type, p.routines_per_month FROM routine_assignments ra JOIN routines r ON r.id = ra.routine_id JOIN clients c ON c.id = ra.client_id LEFT JOIN service_plans p ON p.id = c.plan_id WHERE ra.routine_id = ${input.routineId} AND ra.client_id = ${client.id} AND ra.active = true AND (ra.ends_on IS NULL OR ra.ends_on >= (now() AT TIME ZONE 'America/Panama')::date)`;
+  const [routine] = await sql`SELECT ra.id AS assignment_id, ra.entitlement_id, r.title, c.id AS client_id, c.full_name, c.owner_id, c.service_mode, ra.starts_on, ra.due_on, c.billing_cutoff_day, c.monthly_session_target, p.service_type, p.routines_per_month FROM routine_assignments ra JOIN routines r ON r.id = ra.routine_id JOIN clients c ON c.id = ra.client_id LEFT JOIN service_plans p ON p.id = c.plan_id WHERE ra.routine_id = ${input.routineId} AND ra.client_id = ${client.id} AND ra.active = true AND (ra.ends_on IS NULL OR ra.ends_on >= (now() AT TIME ZONE 'America/Panama')::date)`;
   if (!routine || !routineAssignmentIsAvailable(routine as Record<string, unknown>)) return reply.code(404).send({ error: 'La rutina no está asignada a este cliente' });
   const state = await sql.begin(async transaction => {
     const completedOn = routineRunDay(routine as Record<string, unknown>, input.completedOn);
-    const run = await resolveRoutineRunNumber(transaction, { routineId: input.routineId, clientId: String(client.id), completedOn, requestedRunNumber: input.runNumber, allowRepeat: routine.service_type === 'rutinas' });
+    const run = await resolveRoutineRunNumber(transaction, { routineId: input.routineId, clientId: String(client.id), completedOn, requestedRunNumber: input.runNumber, allowRepeat: isWindowedAssignment(routine as Record<string, unknown>) });
     if (input.kind === 'started') await transaction`INSERT INTO routine_timer_sessions (routine_id, client_id, completed_on, run_number, started_at, elapsed_seconds, active) VALUES (${input.routineId}, ${client.id}, ${completedOn}, ${run.runNumber}, now(), ${input.elapsedSeconds}, true) ON CONFLICT (routine_id, client_id, completed_on, run_number) DO UPDATE SET active = true, paused_at = null, elapsed_seconds = GREATEST(routine_timer_sessions.elapsed_seconds, EXCLUDED.elapsed_seconds), updated_at = now()`;
     else if (input.kind === 'paused') await transaction`UPDATE routine_timer_sessions SET active = false, paused_at = now(), elapsed_seconds = GREATEST(elapsed_seconds, ${input.elapsedSeconds}), updated_at = now() WHERE routine_id = ${input.routineId} AND client_id = ${client.id} AND completed_on = ${completedOn} AND run_number = ${run.runNumber}`;
     else await transaction`UPDATE routine_timer_sessions SET active = true, paused_at = null, elapsed_seconds = GREATEST(elapsed_seconds, ${input.elapsedSeconds}), updated_at = now() WHERE routine_id = ${input.routineId} AND client_id = ${client.id} AND completed_on = ${completedOn} AND run_number = ${run.runNumber}`;
@@ -9401,10 +9585,10 @@ app.post('/api/portal/routine-exercise-completions', { preHandler: requireAuth }
   const auth = request.user as AuthUser; if (auth.role !== 'client') return reply.code(403).send({ error: 'Acceso exclusivo para clientes' });
   const input = routineExerciseCompletionSchema.parse(request.body); const client = await portalClient(auth.sub); if (!client) return reply.code(404).send({ error: 'Portal de cliente no encontrado' });
   const result = await sql.begin(async transaction => {
-    const [routine] = await transaction`SELECT ra.id AS assignment_id, r.exercises, ra.starts_on, ra.due_on, c.billing_cutoff_day, c.monthly_session_target, p.service_type, p.routines_per_month FROM routine_assignments ra JOIN routines r ON r.id = ra.routine_id JOIN clients c ON c.id = ra.client_id LEFT JOIN service_plans p ON p.id = c.plan_id WHERE ra.routine_id = ${input.routineId} AND ra.client_id = ${client.id} AND ra.active = true AND (ra.ends_on IS NULL OR ra.ends_on >= (now() AT TIME ZONE 'America/Panama')::date) FOR UPDATE OF ra`;
+    const [routine] = await transaction`SELECT ra.id AS assignment_id, ra.entitlement_id, r.exercises, ra.starts_on, ra.due_on, c.billing_cutoff_day, c.monthly_session_target, p.service_type, p.routines_per_month FROM routine_assignments ra JOIN routines r ON r.id = ra.routine_id JOIN clients c ON c.id = ra.client_id LEFT JOIN service_plans p ON p.id = c.plan_id WHERE ra.routine_id = ${input.routineId} AND ra.client_id = ${client.id} AND ra.active = true AND (ra.ends_on IS NULL OR ra.ends_on >= (now() AT TIME ZONE 'America/Panama')::date) FOR UPDATE OF ra`;
     if (!routine || !routineAssignmentIsAvailable(routine as Record<string, unknown>)) return null;
     const completedOn = routineRunDay(routine as Record<string, unknown>, input.completedOn);
-    const run = await resolveRoutineRunNumber(transaction, { routineId: input.routineId, clientId: String(client.id), completedOn, requestedRunNumber: input.runNumber, keepLatestWhenUnspecified: true, allowRepeat: routine.service_type === 'rutinas' });
+    const run = await resolveRoutineRunNumber(transaction, { routineId: input.routineId, clientId: String(client.id), completedOn, requestedRunNumber: input.runNumber, keepLatestWhenUnspecified: true, allowRepeat: isWindowedAssignment(routine as Record<string, unknown>) });
     if (input.completed || input.completeAll) { const [timer] = await transaction`SELECT id FROM routine_timer_sessions WHERE routine_id = ${input.routineId} AND client_id = ${client.id} AND completed_on = ${completedOn} AND run_number = ${run.runNumber}`; if (!timer) throw new Error('Inicia el cronómetro antes de marcar o completar ejercicios'); }
     const ejercicios = Array.isArray(routine.exercises) ? routine.exercises : [];
     if (!ejercicios.length) throw new Error('Esta rutina no tiene ejercicios para marcar');
@@ -10346,9 +10530,9 @@ async function enlaceDeRutina(token: string) {
   if (!/^[A-Za-z0-9_-]{30,80}$/.test(token)) return { estado: 'desconocido' as const };
   const [fila] = await sql`
     SELECT l.*, r.title, r.description, r.exercises, c.full_name, c.owner_id AS client_owner_id, c.portal_user_id, c.status AS client_status, c.service_mode, c.billing_cutoff_day, c.monthly_session_target, p.service_type, p.routines_per_month,
-      ra.id AS assignment_id, ra.starts_on AS assignment_starts_on, ra.due_on AS assignment_due_on, ra.ends_on AS assignment_ends_on
+      ra.id AS assignment_id, ra.entitlement_id AS assignment_entitlement_id, ra.starts_on AS assignment_starts_on, ra.due_on AS assignment_due_on, ra.ends_on AS assignment_ends_on
     FROM routine_share_links l JOIN routines r ON r.id = l.routine_id JOIN clients c ON c.id = l.client_id LEFT JOIN service_plans p ON p.id = c.plan_id
-    LEFT JOIN LATERAL (SELECT id, starts_on, due_on, ends_on FROM routine_assignments a WHERE a.routine_id = l.routine_id AND a.client_id = l.client_id AND a.active = true ORDER BY a.starts_on DESC LIMIT 1) ra ON true
+    LEFT JOIN LATERAL (SELECT id, entitlement_id, starts_on, due_on, ends_on FROM routine_assignments a WHERE a.routine_id = l.routine_id AND a.client_id = l.client_id AND a.active = true ORDER BY a.starts_on DESC LIMIT 1) ra ON true
     WHERE l.token_hash = ${hashToken(token)}`;
   if (!fila) return { estado: 'desconocido' as const };
   if (fila.revoked_at) return { estado: 'revocado' as const };
@@ -10357,9 +10541,9 @@ async function enlaceDeRutina(token: string) {
   // El vencimiento de la asignación gobierna los enlaces de planes de rutinas.
   // Los enlaces de mensualidad, demo o viaje conservan su vigencia propia aunque
   // la asignación original se haya reemplazado por una versión nueva.
-  if (fila.service_type === 'rutinas' && !fila.assignment_starts_on) return { estado: 'sin_asignacion' as const };
-  if (fila.service_type === 'rutinas' && fechaDbTexto(fila.assignment_starts_on)! > today) return { estado: 'pendiente' as const };
-  if (fila.service_type === 'rutinas' && !routineAssignmentIsAvailable(fila as Record<string, unknown>)) return { estado: 'expirado' as const };
+  if (isWindowedAssignment(fila as Record<string, unknown>) && !fila.assignment_starts_on) return { estado: 'sin_asignacion' as const };
+  if (isWindowedAssignment(fila as Record<string, unknown>) && fechaDbTexto(fila.assignment_starts_on)! > today) return { estado: 'pendiente' as const };
+  if (isWindowedAssignment(fila as Record<string, unknown>) && !routineAssignmentIsAvailable(fila as Record<string, unknown>)) return { estado: 'expirado' as const };
   return { estado: 'ok' as const, fila };
 }
 const mensajeEnlace = { desconocido: 'Este enlace no existe.', revocado: 'Eileen retiró este enlace.', expirado: 'Este enlace ya venció. Pídele uno nuevo a Eileen.', sin_asignacion: 'Esta rutina ya no está asignada.', pendiente: 'Esta rutina todavía no está disponible. Vuelve a abrir el enlace en su fecha de inicio.' };
@@ -10397,6 +10581,7 @@ app.get('/api/public/routine/:token', async (request, reply) => {
     clientFirstName: String(fila.full_name).trim().split(/\s+/)[0],
     expiresAt: fila.expires_at, today: hoy, completedToday: Number(hecha?.count || 0) > 0,
     completedRunsToday: Number(hecha?.count || 0), nextRunNumber: Number(hecha?.latest_run || 0) + 1,
+    repeatable: isWindowedAssignment(fila as Record<string, unknown>),
     serviceType: fila.service_type,
     routine: { title: fila.title, description: fila.description, exercises: fila.exercises },
     exercises: await ejerciciosDeLaRutina(String(fila.owner_id), fila.exercises),
@@ -10440,7 +10625,7 @@ app.post('/api/public/routine/:token/complete', async (request, reply) => {
   // Los enlaces de un cliente de rutinas comparten la misma regla del portal:
   // pueden abrir una nueva realización sólo dentro de la asignación vigente.
   const registro = await sql.begin(async transaction => {
-    const isRoutinePlan = fila.service_type === 'rutinas';
+    const isRoutinePlan = isWindowedAssignment(fila as Record<string, unknown>);
     const completedOn = isRoutinePlan ? fechaDeNegocioPanama() : hoy;
     const run = isRoutinePlan
       ? await resolveRoutineRunNumber(transaction, { routineId: String(fila.routine_id), clientId: String(fila.client_id), completedOn, requestedRunNumber: input.runNumber, allowRepeat: true })
