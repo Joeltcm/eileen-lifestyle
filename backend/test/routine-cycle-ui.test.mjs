@@ -93,3 +93,15 @@ test('D2) ciclo nuevo sin rutinas enviadas: el cliente ve un mensaje claro y nad
     assert.deepEqual(p.errores, []);
   } finally { await p.cerrar(); }
 });
+
+test('el editor del cliente de rutinas llama "Rutinas esperadas por ciclo" a su cupo; el de otros planes no cambia', async () => {
+  const p = await abrirPantalla({ baseApi: servidor.base, token: tokenStaff, ancho: 375 });
+  try {
+    await esperar(() => p.evaluar('typeof editClient === "function" && data && data.clients && data.clients.length > 0'), { mensaje: 'clientes cargados' });
+    p.evaluar(`editClient(data.clients.find(c => c.id === '${clientId}'))`);
+    const form = await esperar(() => p.q('#edit-client-form'), { mensaje: 'editor' });
+    assert.match(form.textContent, /Rutinas esperadas por ciclo/); assert.match(form.textContent, /cupo contra el que se mide su cumplimiento/);
+    assert.doesNotMatch(form.textContent, /Sesiones esperadas al mes/);
+    assert.deepEqual(p.errores, []);
+  } finally { await p.cerrar(); }
+});
