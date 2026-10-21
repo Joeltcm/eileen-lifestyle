@@ -4201,6 +4201,36 @@ async function routineAssignmentDates(transaction: TransactionSql, ownerId: stri
   return { startsOn: start, dueOn: dueOnAdjusted ? cycle.cycleEnd : (dueOn || cycle.cycleEnd), dueOnAdjusted, cycle };
 }
 
+/**
+ * Las asignaciones creadas antes del ciclo de rutinas pueden no tener fecha
+ * límite, o conservar una fecha que sobrepasa su ciclo. No las reescribimos al
+ * leerlas: el límite efectivo siempre es el menor entre la fecha guardada y el
+ * fin del ciclo calculado a partir de starts_on. Así la misma regla protege el
+ * portal, sus mutaciones y los enlaces públicos mientras se prepara cualquier
+ * reparación de datos por separado.
+ */
+function routineAssignmentEffectiveDueOn(assignment: Record<string, unknown>, client: Record<string, unknown> = assignment): string | null {
+  const serviceType = String(assignment.service_type ?? client.service_type ?? '');
+  const dueOn = fechaDbTexto(assignment.due_on ?? assignment.assignment_due_on);
+  if (serviceType !== 'rutinas') return dueOn;
+  const startsOn = fechaDbTexto(assignment.starts_on ?? assignment.assignment_starts_on);
+  if (!startsOn) return null;
+  const cycle = routineCycle({
+    cutoffDay: Number(assignment.billing_cutoff_day ?? client.billing_cutoff_day) || 1,
+    monthlyTarget: (assignment.monthly_session_target ?? client.monthly_session_target) == null ? null : Number(assignment.monthly_session_target ?? client.monthly_session_target),
+    planRoutinesPerMonth: (assignment.routines_per_month ?? client.routines_per_month) == null ? null : Number(assignment.routines_per_month ?? client.routines_per_month)
+  }, startsOn);
+  return dueOn && dueOn < cycle.cycleEnd ? dueOn : cycle.cycleEnd;
+}
+
+function routineAssignmentIsAvailable(assignment: Record<string, unknown>, client: Record<string, unknown> = assignment, today = fechaDeNegocioPanama()): boolean {
+  const serviceType = String(assignment.service_type ?? client.service_type ?? '');
+  if (serviceType !== 'rutinas') return true;
+  const startsOn = fechaDbTexto(assignment.starts_on ?? assignment.assignment_starts_on);
+  const effectiveDueOn = routineAssignmentEffectiveDueOn(assignment, client);
+  return Boolean(startsOn && effectiveDueOn && startsOn <= today && effectiveDueOn >= today);
+}
+
 async function enforceRoutineQuota(transaction: TransactionSql, ownerId: string, clientId: string, routineId: string, dates: RoutineAssignmentDates, confirmQuota: boolean | undefined) {
   if (!dates.cycle?.quota) return;
   const [count] = await transaction`
@@ -8821,7 +8851,6 @@ app.get('/api/portal/summary', { preHandler: requireAuth }, async (request, repl
       FROM routine_assignments ra JOIN routines r ON r.id = ra.routine_id
       WHERE ra.client_id = ${client.id} AND ra.active = true AND r.archived_at IS NULL
         AND (ra.ends_on IS NULL OR ra.ends_on >= (now() AT TIME ZONE 'America/Panama')::date)
-        AND (${client.service_type} <> 'rutinas' OR (ra.starts_on <= (now() AT TIME ZONE 'America/Panama')::date AND (ra.due_on IS NULL OR ra.due_on >= (now() AT TIME ZONE 'America/Panama')::date)))
       ORDER BY ra.starts_on DESC`,
     sql`SELECT s.id, s.routine_id, s.starts_at, s.duration_minutes, s.mode, s.status, s.cancellation_kind, s.cancelled_by, s.credit_charge, s.completion_percent,
       r.title AS routine_title,
@@ -8933,6 +8962,7 @@ app.get('/api/portal/summary', { preHandler: requireAuth }, async (request, repl
       LIMIT 200
     `
   ]);
+  const visibleRoutines = routines.filter(routine => routineAssignmentIsAvailable(routine as Record<string, unknown>, client as Record<string, unknown>));
   const contracts = await sql`
     SELECT id, template_key, status, sent_at, signed_at, signed_name, pdf_sha256, created_at
     FROM client_contracts WHERE client_id = ${client.id} AND status IN ('enviado', 'firmado') ORDER BY created_at DESC
@@ -8953,9 +8983,9 @@ app.get('/api/portal/summary', { preHandler: requireAuth }, async (request, repl
   // Tras el corte (estado `new`) el portal lee la facturación nueva y ya no muestra saldos de clases (D-14).
   if (billingEngine.state === 'new') {
     const fromNew = await portalBillingFromNewSource(client.id as string, client.owner_id as string);
-    return { client: profile, travel: viajes, invoices: fromNew.invoices, billingNotice: fromNew.notice, routines, sessions, complianceSessions, busySlots: privateBusySlots, assessments, routineCompletions: completions, routineExerciseCompletions: exerciseCompletions, routineHistory, exercises, packages: [], credits: [], weightLogs, contracts };
+    return { client: profile, travel: viajes, invoices: fromNew.invoices, billingNotice: fromNew.notice, routines: visibleRoutines, sessions, complianceSessions, busySlots: privateBusySlots, assessments, routineCompletions: completions, routineExerciseCompletions: exerciseCompletions, routineHistory, exercises, packages: [], credits: [], weightLogs, contracts };
   }
-  return { client: profile, travel: viajes, invoices, billingNotice: null, routines, sessions, complianceSessions, busySlots: privateBusySlots, assessments, routineCompletions: completions, routineExerciseCompletions: exerciseCompletions, routineHistory, exercises, packages, credits, weightLogs, contracts };
+  return { client: profile, travel: viajes, invoices, billingNotice: null, routines: visibleRoutines, sessions, complianceSessions, busySlots: privateBusySlots, assessments, routineCompletions: completions, routineExerciseCompletions: exerciseCompletions, routineHistory, exercises, packages, credits, weightLogs, contracts };
 });
 
 const clientWeightLogSchema = z.object({
@@ -9156,10 +9186,11 @@ app.post('/api/portal/routine-completions', { preHandler: requireAuth }, async (
   const auth = request.user as AuthUser; if (auth.role !== 'client') return reply.code(403).send({ error: 'Acceso exclusivo para clientes' });
   const input = routineCompletionSchema.parse(request.body); const client = await portalClient(auth.sub); if (!client) return reply.code(404).send({ error: 'Portal de cliente no encontrado' });
   const [assignment] = await sql`
-    SELECT ra.id FROM routine_assignments ra JOIN clients c ON c.id = ra.client_id LEFT JOIN service_plans p ON p.id = c.plan_id
+    SELECT ra.id, ra.starts_on, ra.due_on, c.billing_cutoff_day, c.monthly_session_target, p.service_type, p.routines_per_month
+    FROM routine_assignments ra JOIN clients c ON c.id = ra.client_id LEFT JOIN service_plans p ON p.id = c.plan_id
     WHERE ra.routine_id = ${input.routineId} AND ra.client_id = ${client.id} AND ra.active = true
-      AND (p.service_type IS DISTINCT FROM 'rutinas' OR (ra.starts_on <= (now() AT TIME ZONE 'America/Panama')::date AND (ra.due_on IS NULL OR ra.due_on >= (now() AT TIME ZONE 'America/Panama')::date)))`;
-  if (!assignment) return reply.code(404).send({ error: 'La rutina no está asignada a este cliente' });
+  `;
+  if (!assignment || !routineAssignmentIsAvailable(assignment as Record<string, unknown>)) return reply.code(404).send({ error: 'La rutina no está asignada a este cliente' });
   const [completion] = await sql`
     INSERT INTO routine_completions (routine_id, client_id, completed_on, completion_percent, marked_by_user_id, notes, duration_seconds)
     VALUES (${input.routineId}, ${client.id}, ${input.completedOn}, ${input.completionPercent}, ${auth.sub}, ${input.notes || null}, ${input.durationSeconds ?? null})
@@ -9213,8 +9244,8 @@ async function notifyRoutineActivity(input: {
 app.post('/api/portal/routine-activity', { preHandler: requireAuth }, async (request, reply) => {
   const auth = request.user as AuthUser; if (auth.role !== 'client') return reply.code(403).send({ error: 'Acceso exclusivo para clientes' });
   const input = routineActivitySchema.parse(request.body); const client = await portalClient(auth.sub); if (!client) return reply.code(404).send({ error: 'Portal de cliente no encontrado' });
-  const [routine] = await sql`SELECT r.title, c.id AS client_id, c.full_name, c.owner_id, c.service_mode FROM routine_assignments ra JOIN routines r ON r.id = ra.routine_id JOIN clients c ON c.id = ra.client_id LEFT JOIN service_plans p ON p.id = c.plan_id WHERE ra.routine_id = ${input.routineId} AND ra.client_id = ${client.id} AND ra.active = true AND (ra.ends_on IS NULL OR ra.ends_on >= (now() AT TIME ZONE 'America/Panama')::date) AND (p.service_type IS DISTINCT FROM 'rutinas' OR (ra.starts_on <= (now() AT TIME ZONE 'America/Panama')::date AND (ra.due_on IS NULL OR ra.due_on >= (now() AT TIME ZONE 'America/Panama')::date)))`;
-  if (!routine) return reply.code(404).send({ error: 'La rutina no está asignada a este cliente' });
+  const [routine] = await sql`SELECT r.title, c.id AS client_id, c.full_name, c.owner_id, c.service_mode, ra.starts_on, ra.due_on, c.billing_cutoff_day, c.monthly_session_target, p.service_type, p.routines_per_month FROM routine_assignments ra JOIN routines r ON r.id = ra.routine_id JOIN clients c ON c.id = ra.client_id LEFT JOIN service_plans p ON p.id = c.plan_id WHERE ra.routine_id = ${input.routineId} AND ra.client_id = ${client.id} AND ra.active = true AND (ra.ends_on IS NULL OR ra.ends_on >= (now() AT TIME ZONE 'America/Panama')::date)`;
+  if (!routine || !routineAssignmentIsAvailable(routine as Record<string, unknown>)) return reply.code(404).send({ error: 'La rutina no está asignada a este cliente' });
   await sql.begin(async transaction => {
     if (input.kind === 'started') await transaction`INSERT INTO routine_timer_sessions (routine_id, client_id, completed_on, started_at, elapsed_seconds, active) VALUES (${input.routineId}, ${client.id}, ${input.completedOn}, now(), ${input.elapsedSeconds}, true) ON CONFLICT (routine_id, client_id, completed_on) DO UPDATE SET active = true, paused_at = null, elapsed_seconds = GREATEST(routine_timer_sessions.elapsed_seconds, EXCLUDED.elapsed_seconds), updated_at = now()`;
     else if (input.kind === 'paused') await transaction`UPDATE routine_timer_sessions SET active = false, paused_at = now(), elapsed_seconds = GREATEST(elapsed_seconds, ${input.elapsedSeconds}), updated_at = now() WHERE routine_id = ${input.routineId} AND client_id = ${client.id} AND completed_on = ${input.completedOn}`;
@@ -9229,8 +9260,8 @@ app.post('/api/portal/routine-exercise-completions', { preHandler: requireAuth }
   const input = routineExerciseCompletionSchema.parse(request.body); const client = await portalClient(auth.sub); if (!client) return reply.code(404).send({ error: 'Portal de cliente no encontrado' });
   if (input.completed || input.completeAll) { const [timer] = await sql`SELECT id FROM routine_timer_sessions WHERE routine_id = ${input.routineId} AND client_id = ${client.id} AND completed_on = ${input.completedOn}`; if (!timer) return reply.code(409).send({ error: 'Inicia el cronómetro antes de marcar o completar ejercicios' }); }
   const result = await sql.begin(async transaction => {
-    const [routine] = await transaction`SELECT r.exercises FROM routine_assignments ra JOIN routines r ON r.id = ra.routine_id JOIN clients c ON c.id = ra.client_id LEFT JOIN service_plans p ON p.id = c.plan_id WHERE ra.routine_id = ${input.routineId} AND ra.client_id = ${client.id} AND ra.active = true AND (ra.ends_on IS NULL OR ra.ends_on >= (now() AT TIME ZONE 'America/Panama')::date) AND (p.service_type IS DISTINCT FROM 'rutinas' OR (ra.starts_on <= (now() AT TIME ZONE 'America/Panama')::date AND (ra.due_on IS NULL OR ra.due_on >= (now() AT TIME ZONE 'America/Panama')::date))) FOR UPDATE OF ra`;
-    if (!routine) return null;
+    const [routine] = await transaction`SELECT r.exercises, ra.starts_on, ra.due_on, c.billing_cutoff_day, c.monthly_session_target, p.service_type, p.routines_per_month FROM routine_assignments ra JOIN routines r ON r.id = ra.routine_id JOIN clients c ON c.id = ra.client_id LEFT JOIN service_plans p ON p.id = c.plan_id WHERE ra.routine_id = ${input.routineId} AND ra.client_id = ${client.id} AND ra.active = true AND (ra.ends_on IS NULL OR ra.ends_on >= (now() AT TIME ZONE 'America/Panama')::date) FOR UPDATE OF ra`;
+    if (!routine || !routineAssignmentIsAvailable(routine as Record<string, unknown>)) return null;
     const ejercicios = Array.isArray(routine.exercises) ? routine.exercises : [];
     if (!ejercicios.length) throw new Error('Esta rutina no tiene ejercicios para marcar');
     if (!input.completeAll && input.exerciseIndex == null) throw new Error('Indica el ejercicio que se está marcando');
@@ -10150,7 +10181,7 @@ function demasiadasVisitas(request: { ip: string }) {
 async function enlaceDeRutina(token: string) {
   if (!/^[A-Za-z0-9_-]{30,80}$/.test(token)) return { estado: 'desconocido' as const };
   const [fila] = await sql`
-    SELECT l.*, r.title, r.description, r.exercises, c.full_name, c.owner_id AS client_owner_id, c.portal_user_id, c.status AS client_status, c.service_mode, p.service_type,
+    SELECT l.*, r.title, r.description, r.exercises, c.full_name, c.owner_id AS client_owner_id, c.portal_user_id, c.status AS client_status, c.service_mode, c.billing_cutoff_day, c.monthly_session_target, p.service_type, p.routines_per_month,
       ra.starts_on AS assignment_starts_on, ra.due_on AS assignment_due_on
     FROM routine_share_links l JOIN routines r ON r.id = l.routine_id JOIN clients c ON c.id = l.client_id LEFT JOIN service_plans p ON p.id = c.plan_id
     LEFT JOIN LATERAL (SELECT starts_on, due_on FROM routine_assignments a WHERE a.routine_id = l.routine_id AND a.client_id = l.client_id AND a.active = true ORDER BY a.starts_on DESC LIMIT 1) ra ON true
@@ -10159,11 +10190,12 @@ async function enlaceDeRutina(token: string) {
   if (fila.revoked_at) return { estado: 'revocado' as const };
   if (new Date(fila.expires_at as string).getTime() <= Date.now()) return { estado: 'expirado' as const };
   const today = fechaDeNegocioPanama();
-  if (fila.service_type === 'rutinas' && (!fila.assignment_starts_on || String(fila.assignment_starts_on).slice(0, 10) > today)) return { estado: 'pendiente' as const };
-  if (fila.service_type === 'rutinas' && fila.assignment_due_on && String(fila.assignment_due_on).slice(0, 10) < today) return { estado: 'expirado' as const };
+  if (!fila.assignment_starts_on) return { estado: 'sin_asignacion' as const };
+  if (fila.service_type === 'rutinas' && fechaDbTexto(fila.assignment_starts_on)! > today) return { estado: 'pendiente' as const };
+  if (fila.service_type === 'rutinas' && !routineAssignmentIsAvailable(fila as Record<string, unknown>)) return { estado: 'expirado' as const };
   return { estado: 'ok' as const, fila };
 }
-const mensajeEnlace = { desconocido: 'Este enlace no existe.', revocado: 'Eileen retiró este enlace.', expirado: 'Este enlace ya venció. Pídele uno nuevo a Eileen.', pendiente: 'Esta rutina todavía no está disponible. Vuelve a abrir el enlace en su fecha de inicio.' };
+const mensajeEnlace = { desconocido: 'Este enlace no existe.', revocado: 'Eileen retiró este enlace.', expirado: 'Este enlace ya venció. Pídele uno nuevo a Eileen.', sin_asignacion: 'Esta rutina ya no está asignada.', pendiente: 'Esta rutina todavía no está disponible. Vuelve a abrir el enlace en su fecha de inicio.' };
 
 // Ejercicios del catálogo que aparecen en la rutina (por id o por el slug antiguo), con la marca de si tienen video.
 async function ejerciciosDeLaRutina(ownerId: string, ejercicios: unknown) {
