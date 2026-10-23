@@ -131,3 +131,15 @@ test('HU6) el editor de cotizaciones no se ensancha por la fila de tarifas (colu
   assert.match(css, /\.qt-editor>\*\{[^}]*min-width:0/, 'y sus hijos también');
   assert.match(css, /\.help-grid\{[^}]*minmax\(min\(300px,100%\),1fr\)/, 'la cuadrícula de la ayuda no impone 300 px mínimos');
 });
+
+test('HU7) el atajo de ayuda del Resumen es una franja propia, no un botón dentro del hero (en el teléfono caía sobre la foto)', async () => {
+  const p = await abrirPantalla({ baseApi: servidor.base, token: tokenStaff, ancho: 375 });
+  try {
+    await lista(p);
+    assert.equal(p.qa('.hero [data-view-go="help"]').length, 0, 'ya no hay botón de ayuda dentro del hero');
+    const franja = p.q('#dashboard .help-strip[data-view-go="help"]'); assert.ok(franja, 'hay una franja de ayuda en el Resumen');
+    assert.equal(franja.closest('.hero'), null);
+    p.clic(franja);
+    await esperar(() => p.q('#help-root #help-search'), { mensaje: 'abre el centro de ayuda' });
+  } finally { await p.cerrar(); }
+});
