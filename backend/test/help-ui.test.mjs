@@ -124,3 +124,10 @@ test('HU5) cada «etiqueta» citada en la ayuda existe de verdad en la interfaz'
   }
   assert.deepEqual([...sinExistir], [], 'etiquetas de la ayuda que ya no están en la interfaz');
 });
+
+test('HU6) el editor de cotizaciones no se ensancha por la fila de tarifas (columna con minmax(0,1fr))', () => {
+  const css = leer('styles.css');
+  assert.match(css, /\.qt-editor\{[^}]*grid-template-columns:minmax\(0,1fr\)/, 'la columna del editor debe poder encogerse');
+  assert.match(css, /\.qt-editor>\*\{[^}]*min-width:0/, 'y sus hijos también');
+  assert.match(css, /\.help-grid\{[^}]*minmax\(min\(300px,100%\),1fr\)/, 'la cuadrícula de la ayuda no impone 300 px mínimos');
+});

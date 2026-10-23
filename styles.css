@@ -1050,7 +1050,7 @@ body:has(#portal-routines.active) .portal-weight-fab{display:none}
 .qt-foot{padding:14px 24px 20px;color:var(--muted)}
 
 /* editor */
-.qt-editor{max-width:880px;margin:0 auto;display:grid;gap:16px;padding-bottom:90px}
+.qt-editor{max-width:880px;margin:0 auto;display:grid;grid-template-columns:minmax(0,1fr);gap:16px;padding-bottom:90px;width:100%}.qt-editor>*{min-width:0;max-width:100%}.qt-plan-chips{max-width:100%}
 .qt-editor-top{display:flex;gap:14px;align-items:center}.qt-editor-top h2{margin:0;font:600 28px Fraunces,serif}.qt-editor-top button{min-height:44px}
 .qt-step{padding:20px!important}.qt-step label{display:grid;gap:6px;margin-top:12px;font-size:13px;color:var(--ink-2)}
 .qt-step-head{display:flex;gap:12px;align-items:center}.qt-step-head h3{margin:0;font:600 21px Fraunces,serif}.qt-step-head p{margin:2px 0 0;color:var(--muted);font-size:13.5px}
@@ -1117,7 +1117,7 @@ code{background:#f4ecf0;border-radius:6px;padding:1px 6px;font:12px 'DM Mono'}
 .help-quick{display:flex;gap:8px;flex-wrap:wrap}.help-quick-btn{display:inline-flex;gap:8px;align-items:center;border:1px solid #ecd8e1;background:#fff;border-radius:99px;padding:10px 16px;font:600 13.5px 'DM Sans';color:var(--ink-2);cursor:pointer;min-height:44px}.help-quick-btn:hover{background:#fbf0f4}
 .help-cat{margin:30px 0 12px;font:600 22px Fraunces,serif;color:#6a4558;display:flex;gap:10px;align-items:center}
 .help-count{margin:18px 0 6px;color:var(--muted)}
-.help-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:12px}
+.help-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(300px,100%),1fr));gap:12px}
 .help-card{display:flex;gap:14px;align-items:center;text-align:left;width:100%;border:1px solid #efe3e9;background:#fff;border-radius:18px;padding:16px;cursor:pointer;font:inherit;color:var(--ink);box-shadow:0 5px 18px #5a3e4a0b;transition:transform .15s,box-shadow .15s;min-height:92px}
 .help-card:hover{transform:translateY(-2px);box-shadow:0 12px 26px #5a3e4a16}
 .help-card-icon{flex:0 0 52px;height:52px;border-radius:16px;display:grid;place-items:center;font-size:26px;background:linear-gradient(135deg,#fbe6ee,#f6dce7)}
