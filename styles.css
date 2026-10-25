@@ -1153,3 +1153,9 @@ code{background:#f4ecf0;border-radius:6px;padding:1px 6px;font:12px 'DM Mono'}
 }
 
 .help-strip{width:100%;display:flex;align-items:center;gap:12px;margin:14px 0 0;padding:12px 16px;border:1px solid #f0dce5;border-radius:16px;background:linear-gradient(135deg,#fbeef3,#fffdfc);color:var(--ink);text-align:left;cursor:pointer;min-height:56px;font:inherit}.help-strip:hover{background:#fbf1f5}.help-strip-icon{font-size:22px;flex:0 0 auto}.help-strip-text{flex:1;min-width:0;display:grid;gap:1px}.help-strip-text b{font:600 15px 'DM Sans'}.help-strip-text small{color:var(--muted);font-size:12.5px}.help-strip>span:last-child{color:#8f5770;font-weight:700}
+
+.notification-item.birthday{background:#fdf0f5;border-left:3px solid #e6a7c0}.notification-actions a.outcome-btn{display:inline-flex;align-items:center;justify-content:center;text-decoration:none;min-height:44px;padding:0 14px}
+.birthday-list{display:grid;gap:8px}.birthday-row{display:flex;align-items:center;gap:12px;padding:10px 12px;border:1px solid #f1e5ea;border-radius:14px;background:#fffdfc}.birthday-row.soon{background:linear-gradient(135deg,#fdeef4,#fffdfc);border-color:#efc9d8}
+.birthday-day{flex:0 0 46px;height:46px;border-radius:12px;display:grid;place-content:center;text-align:center;background:#f6e6ed;color:#7a4560}.birthday-day b{font:600 18px/1 Fraunces,serif}.birthday-day small{font-size:10.5px;text-transform:uppercase;letter-spacing:.6px}
+.birthday-who{flex:1;min-width:0;display:grid;gap:1px}.birthday-who b{font:600 14.5px 'DM Sans';overflow-wrap:anywhere}.birthday-who small{color:var(--muted);font-size:12.5px}
+.birthday-wa{flex:0 0 auto;display:inline-flex;align-items:center;justify-content:center;min-height:44px;padding:0 14px;text-decoration:none}.birthday-more{margin:4px 2px 0;color:var(--muted);font-size:12.5px}

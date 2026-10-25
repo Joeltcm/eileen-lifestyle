@@ -19,6 +19,7 @@ import { normalizeRegisteredVideo } from './video-upload-normalizer.js';
 import { accountStatementPdf, accountsReceivablePdf, billingInvoicePdf, compliancePdf, contractPdf, invoicePdf, monthlyFinancePdf, routineComplianceAllPdf, routineCompliancePdf } from './billing-reports.js';
 import { routineComplianceAll, routineComplianceSeries } from './routine-compliance-report.js';
 import { registerQuoteRoutes } from './quotes.js';
+import { type BirthdayItem, registerBirthdayRoutes, upcomingBirthdays, birthdayPayload, birthdayPushCandidates, BIRTHDAY_NOTICE_DAYS } from './birthdays.js';
 import { fechaDeNegocioPanama, fechaPanamaDiasAtras } from './panama-date.js';
 import { resolveBillingEngine } from './billing-engine.js';
 import { planBillingGeneration, runBillingGeneration, shiftCutAfterPause } from './billing-generator.js';
@@ -83,6 +84,7 @@ app.setErrorHandler((error, _request, reply) => {
 
 // Cotizador (propuestas informativas con cláusulas). Va después del manejador de errores para que sus 4xx se respondan igual que los demás.
 await registerQuoteRoutes(app);
+await registerBirthdayRoutes(app);
 
 async function requireAuth(request: FastifyRequest) {
   await request.jwtVerify();
@@ -8522,11 +8524,16 @@ app.get('/api/notifications', { preHandler: requireAuth }, async (request, reply
     FROM quotes q LEFT JOIN clients c ON c.id = q.client_id
     WHERE q.owner_id = ${auth.sub} AND q.status = 'sent' AND q.share_token IS NOT NULL AND q.viewed_at >= now() - interval '48 hours'
     ORDER BY q.viewed_at DESC LIMIT 20`;
+  // Cumpleaños de hoy, mañana y pasado mañana (el aviso dura hasta el día del cumpleaños).
+  const cumpleanos = await upcomingBirthdays(auth.sub, fechaDeNegocioPanama(), BIRTHDAY_NOTICE_DAYS);
   const contractNotificationRows = await sql`
     SELECT id, title, body, created_at FROM contract_notifications
     WHERE owner_id = ${auth.sub} AND read_at IS NULL
     ORDER BY created_at DESC LIMIT 50`;
   return [
+    ...cumpleanos.map(birthday => ({
+      type: 'birthday', clientId: birthday.clientId, name: birthday.name, phone: birthday.phone, daysUntil: birthday.daysUntil, ...birthdayPayload(birthday), scheduledFor: birthday.date
+    })),
     ...cotizacionesVistas.map(quote => ({
       type: 'quote_viewed', quoteId: quote.id, title: `Vieron tu cotización COT-${String(quote.number).padStart(4, '0')}`,
       body: `${quote.recipient} abrió «${quote.title}»${Number(quote.view_count) > 1 ? ` (${quote.view_count} veces)` : ''}.`, scheduledFor: quote.viewed_at
@@ -8577,7 +8584,7 @@ app.post('/api/notifications/:id/read', { preHandler: requireStaff }, async (req
 
 type ReminderCandidate = {
   user_id: string;
-  kind: 'session' | 'payment' | 'pending' | 'pause' | 'routine_expiring' | 'routine_cycle_prep';
+  kind: 'session' | 'payment' | 'pending' | 'pause' | 'routine_expiring' | 'routine_cycle_prep' | 'birthday';
   reference_id: string;
   role: AuthUser['role'];
   full_name: string;
@@ -8589,6 +8596,7 @@ type ReminderCandidate = {
   credit?: boolean;
   ends_on?: string;
   prep?: RoutinePrepItem;
+  birthday?: BirthdayItem;
 };
 
 // Enviar una notificación de prueba al propio usuario. Existe porque hasta
@@ -8771,7 +8779,14 @@ async function dispatchReminders() {
       prepRows.push({ user_id: String(owner.id), kind: 'routine_cycle_prep', reference_id: prep.referenceId, role: owner.role as AuthUser['role'], full_name: prep.clientName, prep });
     }
   }
-  for (const reminder of [...pendingRows, ...sessionRows, ...paymentRows, ...pauseRows, ...routineRows, ...prepRows]) {
+  // Cumpleaños de los clientes (a 2 días): solo a la entrenadora, con push activo, una sola vez por cumpleaños.
+  const birthdayRows: ReminderCandidate[] = [];
+  for (const owner of prepOwners) {
+    for (const birthday of await birthdayPushCandidates(String(owner.id))) {
+      birthdayRows.push({ user_id: String(owner.id), kind: 'birthday', reference_id: birthday.referenceId, role: owner.role as AuthUser['role'], full_name: birthday.name, birthday });
+    }
+  }
+  for (const reminder of [...pendingRows, ...sessionRows, ...paymentRows, ...pauseRows, ...routineRows, ...prepRows, ...birthdayRows]) {
     const [reserved] = await sql`
       INSERT INTO notification_deliveries (user_id, kind, reference_id)
       VALUES (${reminder.user_id}, ${reminder.kind}, ${reminder.reference_id})
@@ -8791,6 +8806,8 @@ async function dispatchReminders() {
           body: `Programada para ${new Date(reminder.starts_at!).toLocaleString('es-PA', { timeZone: 'America/Panama' })}.`,
           url: new URL(isClient ? '/#portal-calendar' : '/#calendar', config.APP_URL).toString()
         }
+      : reminder.kind === 'birthday'
+      ? { ...birthdayPayload(reminder.birthday!), url: new URL('/#clients', config.APP_URL).toString() }
       : reminder.kind === 'routine_cycle_prep'
       ? routinePrepPayload(reminder.prep!)
       : reminder.kind === 'routine_expiring'

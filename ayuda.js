@@ -446,9 +446,11 @@ const helpTopics = [
         ['🏋️ Un cliente empieza, termina o deja vencer una rutina', 'Con la rutina y el tiempo que tardó.'],
         ['🔁 Un cliente de rutinas necesita sus rutinas del ciclo nuevo', '2 días antes, 1 día antes y el día del corte.'],
         ['🧾 Abrieron una cotización', 'Con cuántas veces la vieron.'],
+        ['🎂 Un cliente cumple años', '2 días antes (a las 8:00 de la mañana) y se queda en la campanita hasta el día del cumpleaños. Con un botón para felicitarle por WhatsApp.'],
         ['✈️ Un viaje empieza sin rutina enviada', 'Para que prepares su enlace.'],
         ['📝 Un cliente firma un contrato', 'Cuando lo firma en el portal.']
       ]),
+      helpTip('Para que te avisemos del cumpleaños de un cliente, guarda su **fecha de nacimiento** en su expediente (la que ya pides para el contrato). Verás los próximos 30 días en la tarjeta «Próximos cumpleaños» del Resumen.'),
       helpFaq([
         { q: 'No me llegan las notificaciones.', a: 'Revisa que estén activadas en ese aparato, que hayas dado el permiso al navegador y que, en iPhone, la app esté instalada en la pantalla de inicio. Usa «Enviar notificación de prueba»; si no llega, desactiva y vuelve a activar.' },
         { q: '¿Por qué la campanita muestra avisos que ya atendí?', a: 'Algunos son informativos y se quitan solos: por ejemplo, el de cotización vista desaparece a las 48 horas, y el de rutinas por enviar cuando ya las envías.' }
