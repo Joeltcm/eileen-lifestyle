@@ -1,4 +1,4 @@
-const APP_VERSION = '328';
+const APP_VERSION = '329';
 const markPwaVersion = () => document.querySelectorAll('.topbar-actions').forEach(actions => {
   if (actions.querySelector('[data-pwa-version]')) return;
   const indicator = document.createElement('span');
@@ -7628,6 +7628,7 @@ async function enterApp(user) {
   currentUser = user; view(restoredView); document.getElementById('auth-screen').hidden = true; document.getElementById('portal-shell').hidden = true; document.getElementById('app-shell').hidden = false;
   document.getElementById('account-button').textContent = initials(user.fullName || user.full_name || user.email);
   await loadData(); renderAll(); navigate(restoredView, { replace: true }); showGoogleCalendarReturn(); startCalendarSynchronization();
+  if (typeof maybeShowWhatsNew === 'function') maybeShowWhatsNew();
 }
 document.getElementById('login-form').addEventListener('submit', async event => {
   event.preventDefault(); const form = new FormData(event.target); const errorBox = document.getElementById('login-error'); errorBox.textContent = '';
@@ -7671,10 +7672,11 @@ function accountMenu() {
   const box = document.createElement('div');
   box.innerHTML = `<p class="eyebrow">TU CUENTA</p><h2>${escapeHtml(nombre || 'Sesión activa')}</h2>
     <div class="account-card"><div><b>${escapeHtml(currentUser?.email || '')}</b><small>${rol}</small></div><span class="initials">${initials(nombre || currentUser?.email || '')}</span></div>
-    ${currentUser?.role !== 'client' ? '<button class="secondary wide-button" id="account-help">💡 Centro de ayuda</button><button class="secondary wide-button" id="demo-contact-settings">Ajustes de la cuenta</button>' : ''}<button class="secondary wide-button" id="account-logout">Cerrar sesión</button>`;
+    ${currentUser?.role !== 'client' ? '<button class="secondary wide-button" id="account-help">💡 Centro de ayuda</button><button class="secondary wide-button" id="account-news">✨ Novedades</button><button class="secondary wide-button" id="demo-contact-settings">Ajustes de la cuenta</button>' : ''}<button class="secondary wide-button" id="account-logout">Cerrar sesión</button>`;
   openModal(box);
   document.getElementById('demo-contact-settings')?.addEventListener('click', accountDemoSettings);
   document.getElementById('account-help')?.addEventListener('click', () => openHelp());
+  document.getElementById('account-news')?.addEventListener('click', () => openWhatsNew());
   document.getElementById('account-logout').onclick = () => { modal.close(); logout(); };
 }
 async function accountDemoSettings() {

@@ -29,7 +29,7 @@ export const esperar = async (condicion, { ms = 6000, cada = 40, mensaje = 'cond
   }
 };
 
-export async function abrirPantalla({ baseApi, token = null, hash = '', ancho = 430 }) {
+export async function abrirPantalla({ baseApi, token = null, hash = '', ancho = 430, novedades = false }) {
   const errores = [];
   const pendientes = new Set();   // peticiones en vuelo: al cerrar se espera a que terminen para que ningún código de la página siga corriendo con la ventana ya cerrada
   const consola = new VirtualConsole();
@@ -45,6 +45,7 @@ export async function abrirPantalla({ baseApi, token = null, hash = '', ancho = 
         pendientes.add(promesa); promesa.finally(() => pendientes.delete(promesa)).catch(() => {});
         return promesa;
       };
+      if (!novedades) window.__sinNovedades = true;   // el aviso de novedades solo sale en las pruebas que lo piden
       if (token) window.localStorage.setItem('eileen-lifestyle-session', token);
       // Lo que jsdom no trae y la aplicación usa:
       window.HTMLDialogElement.prototype.showModal = function () { this.setAttribute('open', ''); };

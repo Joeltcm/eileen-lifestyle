@@ -2446,6 +2446,22 @@ app.get('/api/account-settings', { preHandler: requireStaff }, async request => 
     has_owner_signature: false, owner_signature_updated_at: null };
 });
 
+// ── Novedades de la aplicación ─────────────────────────────────────────────
+// La lista de novedades vive en el frontend (ayuda.js); aquí solo se guarda, por usuaria, hasta cuál ya vio. Los identificadores
+// son 'aaaa-mm-dd-nombre', así que ordenar el texto es ordenar por fecha y la marca nunca retrocede.
+app.get('/api/whats-new', { preHandler: requireStaff }, async request => {
+  const auth = request.user as AuthUser;
+  const [row] = await sql`SELECT whats_new_seen FROM users WHERE id = ${auth.sub}`;
+  return { seen: row?.whats_new_seen ?? null };
+});
+app.post('/api/whats-new/seen', { preHandler: requireStaff }, async request => {
+  const auth = request.user as AuthUser;
+  const { id } = z.object({ id: z.string().regex(/^\d{4}-\d{2}-\d{2}-[a-z0-9-]{1,40}$/) }).parse(request.body);
+  const [row] = await sql`UPDATE users SET whats_new_seen = ${id}, updated_at = now()
+    WHERE id = ${auth.sub} AND (whats_new_seen IS NULL OR whats_new_seen < ${id}) RETURNING whats_new_seen`;
+  return { seen: row?.whats_new_seen ?? (await sql`SELECT whats_new_seen FROM users WHERE id = ${auth.sub}`)[0]?.whats_new_seen ?? null };
+});
+
 app.patch('/api/account-settings', { preHandler: requireStaff }, async request => {
   const auth = request.user as AuthUser;
   const input = z.object({ contactWhatsapp: z.string().trim().regex(/^\d*$/, 'Usa solo dígitos').max(20).optional().nullable(), legalName: z.string().trim().max(160).optional().nullable(), legalId: z.string().trim().max(80).optional().nullable(), legalAddress: z.string().trim().max(240).optional().nullable(), contractCity: z.string().trim().max(100).optional().nullable() }).parse(request.body);

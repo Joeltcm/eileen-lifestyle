@@ -67,6 +67,23 @@ const pwaGuide = {
   ]
 };
 
+// ── Novedades ───────────────────────────────────────────────────────────────────────────────────────────────────
+// CADA VEZ que se publique algo que Eileen vaya a notar, se agrega una entrada AL PRINCIPIO de esta lista (la más nueva primero).
+// Le sale una sola vez al entrar a la aplicación (queda marcado en su usuaria, no en el aparato) y después la puede volver a ver en
+// «✨ Novedades» del menú de su cuenta o en el tema Novedades del centro de ayuda. El id es 'aaaa-mm-dd-nombre' (se ordena por fecha).
+// Las correcciones pequeñas que nadie nota no necesitan entrada. Los nombres de pantallas y botones van entre «comillas angulares».
+const whatsNewReleases = [
+  {
+    id: '2026-10-26-acceso-portal-y-firma', version: 328, date: '26-10-2026', title: 'Acceso al portal más fácil y tu firma en los contratos',
+    items: [
+      { icon: '🔑', title: 'Dar acceso al portal, listo en un toque', text: 'Al generar el acceso de un cliente ya sale un mensaje escrito con su enlace y la dirección del portal. Lo mandas por WhatsApp (abre el chat con su número), por correo o lo copias, y puedes editarlo antes de enviarlo.', go: { label: 'Ver cómo funciona', help: 'portal' } },
+      { icon: '🔁', title: 'Si el cliente vuelve a tocar su enlace', text: 'El enlace sirve una sola vez, y antes el cliente quedaba perdido si lo tocaba de nuevo. Ahora la app le explica qué pasó, le deja entrar con su correo (ya escrito) y su contraseña, y le recuerda que puede pedirte un enlace nuevo.' },
+      { icon: '📲', title: 'Guía para instalar la app en el teléfono', text: 'Cuando tu cliente crea su contraseña le aparece una guía paso a paso, con pestañas para iPhone, Android y computadora, para dejar la app como un ícono en su pantalla de inicio. También la tiene en su portal y tú en tu centro de ayuda.', go: { label: 'Ver la guía', help: 'instalar-app' } },
+      { icon: '✍️', title: 'Tu firma en los contratos', text: 'Si aún no guardaste tu firma, la app te lo avisa en la sección Contrato y te deja guardarla en un toque; si ya la tienes, puedes cambiarla desde ahí. Si enviaste un contrato antes de guardarla, al firmarlo el cliente se usa la que tengas en ese momento.', go: { label: 'Ir a Clientes', view: 'clients' } }
+    ]
+  }
+];
+
 const helpCategories = [
   { id: 'empezar', icon: '🚀', title: 'Para empezar' },
   { id: 'dia', icon: '🗓️', title: 'Tu día a día' },
@@ -123,6 +140,17 @@ const helpTopics = [
       ...pwaGuide.platforms.map(platform => helpSteps(`${platform.icon} ${platform.label}`, platform.steps.map(text => ({ text })))),
       helpWarn('En iPhone y iPad el acceso directo **solo se puede crear desde Safari**. Si el cliente abrió el enlace desde WhatsApp, que lo pase a Safari primero.'),
       helpFaq(pwaGuide.problems)
+    ]
+  },
+  {
+    id: 'novedades', category: 'empezar', icon: '✨', title: 'Novedades', summary: 'Lo que se ha agregado o mejorado en la app, con la fecha de cada cambio.',
+    tags: 'novedades nuevo cambios actualizaciones version que hay de nuevo mejoras',
+    blocks: [
+      helpP('Aquí queda el historial de lo nuevo. Cada vez que se agrega algo importante te sale un aviso una sola vez al entrar; si lo cerraste sin leerlo, lo encuentras aquí o en «✨ Novedades» del menú de tu cuenta.'),
+      ...whatsNewReleases.flatMap(release => [
+        helpSteps(`${release.title} · ${release.date}`, release.items.map(item => ({ text: `${item.icon} **${item.title}.** ${item.text}` })))
+      ]),
+      helpTip('Para saber qué versión tienes, mira la etiqueta **PWA v…** arriba a la derecha. Si no ves lo nuevo, cierra la app por completo y ábrela otra vez (a veces hay que abrirla dos veces para que se actualice).')
     ]
   },
   {
@@ -726,4 +754,36 @@ document.addEventListener('click', event => {
     return;
   }
   if (event.target.closest?.('[data-pwa-close]') && typeof modal !== 'undefined' && modal.open) modal.close();
+});
+
+// ── Aviso de novedades ──────────────────────────────────────────────────────────────────────────────────────────
+function whatsNewMarkup(releases) {
+  return releases.map(release => `<section class="news-release"><p class="news-date">${escapeHtml(release.date)} · ${escapeHtml(release.title)}</p>
+    ${release.items.map((item, index) => `<article class="news-item"><span class="news-icon" aria-hidden="true">${item.icon}</span><div><b>${escapeHtml(item.title)}</b><p>${escapeHtml(item.text)}</p>${item.go ? `<button type="button" class="secondary news-go" data-whatsnew-go="${escapeHtml(release.id)}:${index}">${escapeHtml(item.go.label)}</button>` : ''}</div></article>`).join('')}
+  </section>`).join('');
+}
+function showWhatsNew(releases, { first = true } = {}) {
+  const box = document.createElement('div');
+  box.innerHTML = `<p class="eyebrow">NOVEDADES</p><h2>${first ? 'Lo nuevo en tu app ✨' : 'Novedades de la app ✨'}</h2>
+    <p class="news-lead">${first ? 'Esto es lo que se agregó o mejoró desde la última vez. Solo te lo muestro una vez; después lo encuentras en «✨ Novedades» del menú de tu cuenta.' : 'Todo lo que se ha agregado o mejorado, de lo más nuevo a lo más antiguo.'}</p>
+    ${whatsNewMarkup(releases)}<button type="button" class="primary wide-button" data-pwa-close>Entendido</button>`;
+  openModal(box, true);
+}
+function openWhatsNew() { showWhatsNew(whatsNewReleases, { first: false }); }
+// Al entrar el personal: si hay novedades que esta usuaria no ha visto, se muestran y se marcan como vistas.
+async function maybeShowWhatsNew() {
+  if (window.__sinNovedades) return;
+  try {
+    const { seen } = await api('/api/whats-new');
+    const pending = whatsNewReleases.filter(release => !seen || release.id > seen);
+    if (!pending.length || (typeof modal !== 'undefined' && modal.open)) return;
+    showWhatsNew(pending);
+    await api('/api/whats-new/seen', { method: 'POST', body: { id: whatsNewReleases[0].id } });
+  } catch { /* las novedades nunca deben estorbar la entrada a la aplicación */ }
+}
+document.addEventListener('click', event => {
+  const go = event.target.closest?.('[data-whatsnew-go]'); if (!go) return;
+  const [releaseId, index] = go.dataset.whatsnewGo.split(':'); const target = whatsNewReleases.find(release => release.id === releaseId)?.items[Number(index)]?.go; if (!target) return;
+  if (typeof modal !== 'undefined' && modal.open) modal.close();
+  if (target.help) openHelp(target.help); else if (target.view) navigate(target.view);
 });

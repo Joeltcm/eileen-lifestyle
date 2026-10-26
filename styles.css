@@ -1188,3 +1188,11 @@ code{background:#f4ecf0;border-radius:6px;padding:1px 6px;font:12px 'DM Mono'}
 .owner-sign-notice>span{font-size:22px;flex:0 0 auto}.owner-sign-notice p{margin:2px 0 0;color:var(--ink-2);font-size:13.5px;line-height:1.45}.owner-sign-notice b{font:600 14.5px 'DM Sans'}
 .owner-sign-notice.ok{border-color:#dcebe0;background:#f4faf5;padding:8px 12px}.owner-sign-notice.ok p{margin:0;flex:1}.owner-sign-notice.warn>div{flex:1;min-width:0}.owner-sign-notice button{flex:0 0 auto;min-height:44px}
 @media(max-width:600px){.owner-sign-notice.warn{flex-wrap:wrap}.owner-sign-notice.warn button{width:100%}}
+
+/* Novedades de la app */
+.news-lead{margin:-4px 0 12px;color:var(--ink-2);line-height:1.5}.news-release{margin-bottom:10px}
+.news-date{margin:14px 0 8px;font:500 12px 'DM Mono',monospace;letter-spacing:.8px;color:#8a7380;text-transform:uppercase}
+.news-item{display:flex;gap:12px;padding:12px 14px;margin-bottom:8px;border:1px solid #f1e5ea;border-radius:14px;background:linear-gradient(135deg,#fffafc,#fffdfc)}
+.news-icon{flex:0 0 auto;width:40px;height:40px;border-radius:12px;display:grid;place-items:center;font-size:21px;background:#f9e7ee}
+.news-item b{font:600 15px 'DM Sans'}.news-item p{margin:4px 0 0;color:var(--ink-2);font-size:14px;line-height:1.5}.news-item>div{min-width:0}
+.news-go{margin-top:8px;min-height:44px}
