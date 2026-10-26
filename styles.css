@@ -1169,3 +1169,16 @@ code{background:#f4ecf0;border-radius:6px;padding:1px 6px;font:12px 'DM Mono'}
   body .hero-score small{display:none}
   body .stat-two{bottom:8px;right:6px}
 }
+
+/* Acceso al portal: mensaje para el cliente (entrenadora) y guía de instalación de la app (cliente). */
+.access-for{color:var(--muted);margin:-6px 0 12px}.access-step{margin:14px 0 8px;font-size:14px;color:var(--ink-2)}
+.access-message{width:100%;border:1px solid var(--line);border-radius:14px;padding:12px 14px;font:14px/1.5 'DM Sans',sans-serif;color:var(--ink);background:#fffafc;resize:vertical;min-height:170px}
+.access-actions{display:grid;gap:8px;margin:12px 0 4px}.access-actions .wide-button,.access-actions a{display:flex;align-items:center;justify-content:center;text-align:center;text-decoration:none;min-height:46px}
+.access-whatsapp{background:#2f8f5b;color:#fff;border-color:#2f8f5b}
+.auth-hint{margin:14px 0 4px;color:var(--muted);font-size:13px;line-height:1.5}.auth-install{display:block;margin-top:6px;font-weight:600}
+.pwa-lead{margin:-4px 0 14px;color:var(--ink-2);line-height:1.5}.pwa-guide{display:grid;gap:12px;margin-bottom:14px}.pwa-address{margin:0;padding:10px 12px;border-radius:12px;background:#fbeef3;color:#7a4560;font-size:14px;overflow-wrap:anywhere}
+.pwa-tabs{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px}.pwa-tab{min-height:48px;padding:6px 4px;border:1px solid #ead9e1;background:#fff;border-radius:14px;font:600 12.5px/1.25 'DM Sans';color:var(--ink-2);cursor:pointer;text-align:center}.pwa-tab.active{background:var(--lime);border-color:var(--lime);color:#5b3a49}
+.pwa-panel p{margin:0 0 10px;color:var(--ink-2);line-height:1.5}.pwa-steps{margin:0;padding-left:0;list-style:none;counter-reset:pwa;display:grid;gap:8px}
+.pwa-steps li{counter-increment:pwa;position:relative;padding:12px 12px 12px 46px;border:1px solid #f1e5ea;border-radius:14px;background:#fffdfc;line-height:1.5;font-size:14.5px}
+.pwa-steps li:before{content:counter(pwa);position:absolute;left:12px;top:11px;width:26px;height:26px;border-radius:50%;display:grid;place-items:center;background:linear-gradient(135deg,#f3c4d5,#e6b2c6);color:#49343e;font:700 13px 'DM Sans'}
+.pwa-problems-title{margin:6px 0 0;font:600 17px Fraunces,serif}.portal-guide .pwa-open{margin-top:12px;min-height:46px}

@@ -25,8 +25,8 @@ test('HU1) los temas están completos: ids únicos, categorías válidas, bloque
   try {
     await lista(p);
     const temas = JSON.parse(p.evaluar('JSON.stringify({ topics: helpTopics, cats: helpCategories })'));
-    assert.equal(temas.topics.length, 15);
-    assert.equal(new Set(temas.topics.map(t => t.id)).size, 15, 'ids únicos');
+    assert.equal(temas.topics.length, 16);
+    assert.equal(new Set(temas.topics.map(t => t.id)).size, 16, 'ids únicos');
     const cats = new Set(temas.cats.map(c => c.id));
     const vistas = new Set(p.qa('.nav-link[data-view]').map(a => a.dataset.view));
     const acciones = readFileSync(fileURLToPath(new URL('app.js', raiz)), 'utf8');

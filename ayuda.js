@@ -14,6 +14,59 @@ const helpFaq = items => ({ t: 'faq', items });
 const helpGo = items => ({ t: 'go', items });
 const helpTable = (head, rows) => ({ t: 'table', head, rows });
 
+// ── Guía para instalar la app (PWA) como acceso directo ─────────────────────────────────────────────────────────
+// La usan cuatro sitios: el centro de ayuda de Eileen, la pantalla de acceso, la bienvenida del cliente al crear su contraseña
+// y la guía rápida del portal. Los botones de los navegadores van en **negrita** (no son etiquetas de esta aplicación).
+const pwaGuide = {
+  platforms: [
+    {
+      id: 'iphone', icon: '📱', label: 'iPhone / iPad',
+      intro: 'En iPhone y iPad **tiene que ser desde Safari** (el ícono de la brújula azul). Dura menos de un minuto.',
+      steps: [
+        'Abre la dirección del portal en **Safari**. Si llegaste desde WhatsApp o desde un correo, toca la brújula (o los tres puntos) y elige **Abrir en Safari**.',
+        'Toca el botón **Compartir**: un cuadrado con una flecha hacia arriba ⬆️. Está abajo, en el centro de la pantalla (en iPad, arriba a la derecha).',
+        'Desliza el menú hacia arriba y toca **Agregar a pantalla de inicio** ➕. Si no lo ves, baja hasta el final de la lista y toca **Editar acciones**.',
+        'Deja el nombre «Eileen Lifestyle» y toca **Agregar**, arriba a la derecha.',
+        'Listo 🎉 En tu pantalla de inicio aparece el ícono. **Abre siempre la app desde ese ícono**, no desde Safari.',
+        'La primera vez desde el ícono te pedirá tu correo y tu contraseña, porque la app instalada guarda su propia sesión. Después ya no te la pide.',
+        'Para recibir avisos: abre la app desde el ícono, toca la campanita 🔔 y activa «Notificaciones push en este dispositivo». En iPhone los avisos solo funcionan con la app instalada y con iOS 16.4 o más nuevo.'
+      ]
+    },
+    {
+      id: 'android', icon: '🤖', label: 'Android',
+      intro: 'En Android lo más fácil es con **Chrome**. Dura menos de un minuto.',
+      steps: [
+        'Abre la dirección del portal en **Chrome**. Si llegaste desde WhatsApp, toca los tres puntos y elige **Abrir en Chrome**.',
+        'Toca los **tres puntos** ⋮ de arriba a la derecha.',
+        'Toca **Instalar aplicación** (en algunos teléfonos dice **Agregar a la pantalla principal**).',
+        'Confirma con **Instalar**. Si te pregunta si quieres agregarla, toca **Agregar**.',
+        'Listo 🎉 El ícono aparece en tu pantalla de inicio y en tu lista de aplicaciones. Ábrela siempre desde ahí.',
+        'La primera vez te pedirá tu correo y tu contraseña. Después ya no.',
+        'Para recibir avisos: abre la app, toca la campanita 🔔, activa «Notificaciones push en este dispositivo» y, cuando te lo pregunte el teléfono, toca **Permitir**.',
+        'Si usas el navegador **Samsung Internet**: toca el menú ≡ → **Agregar página a** → **Pantalla de inicio**.'
+      ]
+    },
+    {
+      id: 'pc', icon: '💻', label: 'Computadora',
+      intro: 'En computadora funciona con **Chrome** o **Edge**.',
+      steps: [
+        'Abre la dirección del portal en Chrome o Edge.',
+        'A la derecha de la barra de direcciones aparece un ícono de **instalar** (una pantallita con una flecha). Tócalo. Si no lo ves, abre el menú ⋮ y busca **Instalar Eileen Lifestyle** (o **Guardar y compartir → Instalar como app**).',
+        'Confirma con **Instalar**. Se abre en su propia ventana, como cualquier programa, y queda en tu lista de aplicaciones.',
+        'En una Mac con Safari: menú **Archivo → Agregar al Dock**.'
+      ]
+    }
+  ],
+  problems: [
+    { q: 'No me aparece **Agregar a pantalla de inicio** en el iPhone.', a: 'Casi siempre es porque estás en el navegador interno de WhatsApp o en otro navegador. Toca la brújula o los tres puntos y elige **Abrir en Safari**; luego repite desde el botón Compartir.' },
+    { q: 'Instalé la app y me pide iniciar sesión otra vez.', a: 'Es normal la primera vez: la app instalada guarda su propia sesión. Entra con tu correo y la contraseña que creaste; después te recuerda por semanas.' },
+    { q: 'Toqué mi enlace y dice que ya no es válido.', a: 'El enlace sirve **una sola vez** y vence a las 48 horas. Si ya creaste tu contraseña, no lo necesitas: entra a la dirección del portal con tu correo y tu contraseña. Si no la recuerdas, pídele a Eileen un enlace nuevo.' },
+    { q: 'Olvidé mi contraseña.', a: 'Escríbele a Eileen y te manda un enlace nuevo para crear otra. Tu entrenadora nunca ve tu contraseña.' },
+    { q: 'La app se ve igual que ayer, sin los cambios nuevos.', a: 'Ciérrala del todo (deslízala fuera de las aplicaciones abiertas) y ábrela otra vez; a veces hace falta abrirla dos veces para que se actualice.' },
+    { q: 'No me llegan los avisos.', a: 'Revisa que la app esté instalada, que hayas activado «Notificaciones push en este dispositivo» desde la campanita y que el teléfono permita notificaciones de Eileen Lifestyle en sus ajustes.' }
+  ]
+};
+
 const helpCategories = [
   { id: 'empezar', icon: '🚀', title: 'Para empezar' },
   { id: 'dia', icon: '🗓️', title: 'Tu día a día' },
@@ -59,6 +112,17 @@ const helpTopics = [
         { text: '**Portal:** activa su acceso para que vea su agenda, sus rutinas y sus pagos.' }
       ]),
       helpGo([{ label: 'Ir a Clientes', view: 'clients' }, { label: 'Crear una tarifa', view: 'billing', hint: 'Facturación → Planes' }])
+    ]
+  },
+  {
+    id: 'instalar-app', category: 'empezar', icon: '📲', title: 'Instalar la app en el teléfono', summary: 'Crear el acceso directo (ícono) de la app en iPhone, Android o computadora, y qué hacer si algo no sale. Sirve para ti y para tus clientes.',
+    tags: 'instalar app pwa acceso directo icono pantalla inicio iphone ipad android safari chrome telefono celular compartir agregar notificaciones',
+    blocks: [
+      helpP('Instalar la app le pone un **ícono** en la pantalla de inicio del teléfono, como cualquier otra aplicación: se abre a pantalla completa, no hay que buscar la dirección y es la única forma de recibir avisos en iPhone. No ocupa espacio ni pasa por la tienda de aplicaciones.'),
+      helpTip('Tus clientes ven esta misma guía cuando crean su contraseña con tu enlace, y también en su portal. Si alguien te pregunta cómo, mándale esta pantalla o léesela paso a paso.'),
+      ...pwaGuide.platforms.map(platform => helpSteps(`${platform.icon} ${platform.label}`, platform.steps.map(text => ({ text })))),
+      helpWarn('En iPhone y iPad el acceso directo **solo se puede crear desde Safari**. Si el cliente abrió el enlace desde WhatsApp, que lo pase a Safari primero.'),
+      helpFaq(pwaGuide.problems)
     ]
   },
   {
@@ -413,8 +477,9 @@ const helpTopics = [
       helpSteps('Darle acceso', [
         { text: 'En su expediente toca «Activar portal con enlace» y comparte el enlace por WhatsApp. Él elige su contraseña.' },
         { text: 'Si prefieres, usa «Activar con contraseña» para ponérsela tú (y «Poner contraseña a mano» si la olvidó).' },
-        { text: 'Pídele que instale la app en su teléfono para recibir avisos.' }
+        { text: 'Pídele que instale la app en su teléfono para recibir avisos: al crear su contraseña le sale una guía paso a paso.' }
       ]),
+      helpGo([{ label: '📲 Guía para instalar la app', topic: 'instalar-app' }]),
       helpTable(['Pestaña del portal', 'Qué ve'], [
         ['Mi progreso', 'Su cumplimiento, sus mediciones y su peso.'],
         ['Mis rutinas', 'Las rutinas vigentes con cronómetro; si tiene plan de rutinas, su ciclo; y sus rutinas sueltas.'],
@@ -528,7 +593,7 @@ function helpBlockMarkup(block, index, topicId) {
   if (block.t === 'steps') return `<section class="help-steps" id="help-${topicId}-${index}"><h3>${helpRich(block.title)}</h3><ol>${block.items.map(item => `<li>${helpRich(item.text)}</li>`).join('')}</ol></section>`;
   if (block.t === 'faq') return `<section class="help-faq">${block.items.map(item => `<details><summary>${helpRich(item.q)}</summary><p>${helpRich(item.a)}</p></details>`).join('')}</section>`;
   if (block.t === 'table') return `<div class="help-table-wrap"><table class="help-table"><thead><tr>${block.head.map(cell => `<th>${helpRich(cell)}</th>`).join('')}</tr></thead><tbody>${block.rows.map(row => `<tr>${row.map((cell, i) => `<td data-label="${escapeHtml(helpPlain(block.head[i] || ''))}">${helpRich(cell)}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`;
-  if (block.t === 'go') return `<div class="help-go">${block.items.map(item => `<button type="button" class="secondary"${item.action ? ` data-action="${item.action}"` : ` data-view-go="${item.view}"`}>${escapeHtml(item.label)}${item.hint ? `<small>${escapeHtml(item.hint)}</small>` : ''}</button>`).join('')}</div>`;
+  if (block.t === 'go') return `<div class="help-go">${block.items.map(item => `<button type="button" class="secondary"${item.action ? ` data-action="${item.action}"` : item.topic ? ` data-help-open="${item.topic}"` : ` data-view-go="${item.view}"`}>${escapeHtml(item.label)}${item.hint ? `<small>${escapeHtml(item.hint)}</small>` : ''}</button>`).join('')}</div>`;
   return '';
 }
 
@@ -603,12 +668,56 @@ const portalGuideItems = [
   ['⏳', '¿Hasta cuándo puedo hacerlas?', 'Cada rutina muestra su fecha límite. En un plan de rutinas, las de cada ciclo valen hasta el día antes de tu siguiente corte; las nuevas se habilitan cuando Eileen las envía.'],
   ['📅', '¿Dónde veo mis clases?', 'En «Mi agenda» ves tus clases y los horarios libres. Si necesitas cambiar una, avísale a Eileen con tiempo.'],
   ['💳', '¿Dónde veo lo que he pagado?', 'En «Facturación» está lo pagado y lo pendiente. En «Mis informes» puedes descargar tu estado de cuenta.'],
-  ['📲', '¿Cómo la instalo en mi teléfono?', 'En iPhone, ábrela en Safari, toca Compartir y elige “Agregar a pantalla de inicio”. En Android, usa el menú del navegador y “Instalar aplicación”.'],
+  ['📲', '¿Cómo la instalo en mi teléfono?', 'En iPhone, ábrela en Safari, toca Compartir y elige “Agregar a pantalla de inicio”. En Android, usa el menú del navegador y “Instalar aplicación”. Toca el botón de abajo y te lo muestro paso a paso.'],
   ['🔔', '¿Cómo activo los avisos?', 'Toca la campanita y activa las notificaciones en este dispositivo. En iPhone solo funcionan con la app instalada en la pantalla de inicio.']
 ];
 function portalGuideSection() {
   const host = document.getElementById('portal-dashboard'); if (!host || host.querySelector('#portal-guide')) return;
   const section = document.createElement('section'); section.className = 'card portal-guide'; section.id = 'portal-guide';
-  section.innerHTML = `<p class="eyebrow">GUÍA RÁPIDA</p><h3>¿Cómo funciona todo esto? 💡</h3>${portalGuideItems.map(([icon, question, answer]) => `<details><summary><span aria-hidden="true">${icon}</span>${escapeHtml(question)}</summary><p>${helpRich(answer)}</p></details>`).join('')}`;
+  section.innerHTML = `<p class="eyebrow">GUÍA RÁPIDA</p><h3>¿Cómo funciona todo esto? 💡</h3>${portalGuideItems.map(([icon, question, answer]) => `<details><summary><span aria-hidden="true">${icon}</span>${escapeHtml(question)}</summary><p>${helpRich(answer)}</p></details>`).join('')}<button type="button" class="secondary wide-button pwa-open" data-pwa-guide>📲 Ver la guía para instalar la app</button>`;
   host.append(section);
 }
+
+// ── Guía de instalación: pestañas, ventana y bienvenida del cliente ─────────────────────────────────────────────
+function pwaDefaultPlatform() {
+  const ua = navigator.userAgent || '';
+  if (/iPhone|iPad|iPod/i.test(ua) || (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1)) return 'iphone';
+  if (/Android/i.test(ua)) return 'android';
+  return 'pc';
+}
+function pwaGuideMarkup(selected = pwaDefaultPlatform()) {
+  return `<div class="pwa-guide">
+    <p class="pwa-address">📍 Dirección de tu portal: <b>${escapeHtml(location.origin)}</b></p>
+    <div class="pwa-tabs" role="tablist">${pwaGuide.platforms.map(platform => `<button type="button" role="tab" class="pwa-tab${platform.id === selected ? ' active' : ''}" aria-selected="${platform.id === selected}" data-pwa-tab="${platform.id}">${platform.icon} ${escapeHtml(platform.label)}</button>`).join('')}</div>
+    ${pwaGuide.platforms.map(platform => `<div class="pwa-panel" data-pwa-panel="${platform.id}"${platform.id === selected ? '' : ' hidden'}><p>${helpRich(platform.intro)}</p><ol class="pwa-steps">${platform.steps.map(step => `<li>${helpRich(step)}</li>`).join('')}</ol></div>`).join('')}
+    <h4 class="pwa-problems-title">¿Algo no sale? 🤔</h4>
+    <div class="help-faq">${pwaGuide.problems.map(item => `<details><summary>${helpRich(item.q)}</summary><p>${helpRich(item.a)}</p></details>`).join('')}</div>
+  </div>`;
+}
+// Ventana con la guía: desde la pantalla de acceso (sin sesión) y desde el portal.
+function openPwaGuide() {
+  const box = document.createElement('div');
+  box.innerHTML = `<p class="eyebrow">TU APP EN EL TELÉFONO</p><h2>Crea tu acceso directo 📲</h2>
+    <p class="pwa-lead">Con el ícono en tu pantalla de inicio abres Eileen Lifestyle de un toque y, en iPhone, recibes los avisos. Elige tu teléfono:</p>
+    ${pwaGuideMarkup()}<button type="button" class="primary wide-button" data-pwa-close>Entendido</button>`;
+  openModal(box, true);
+}
+// Primera vez del cliente: acaba de crear su contraseña con el enlace de Eileen.
+function portalWelcome() {
+  const box = document.createElement('div');
+  box.innerHTML = `<p class="eyebrow">¡BIENVENIDO/A!</p><h2>Tu portal está listo 🎉</h2>
+    <p class="pwa-lead">Tu contraseña quedó guardada. Para volver cuando quieras, entra a <b>${escapeHtml(location.origin)}</b> con tu correo y esa contraseña. Y para no tener que buscar la dirección, <b>crea el acceso directo</b> (toma un minuto):</p>
+    ${pwaGuideMarkup()}<button type="button" class="primary wide-button" data-pwa-close>Entrar a mi portal</button>`;
+  openModal(box, true);
+}
+document.addEventListener('click', event => {
+  const open = event.target.closest?.('[data-pwa-guide]'); if (open) { openPwaGuide(); return; }
+  const tab = event.target.closest?.('[data-pwa-tab]');
+  if (tab) {
+    const root = tab.closest('.pwa-guide'); if (!root) return;
+    root.querySelectorAll('[data-pwa-tab]').forEach(button => { const active = button === tab; button.classList.toggle('active', active); button.setAttribute('aria-selected', String(active)); });
+    root.querySelectorAll('[data-pwa-panel]').forEach(panel => { panel.hidden = panel.dataset.pwaPanel !== tab.dataset.pwaTab; });
+    return;
+  }
+  if (event.target.closest?.('[data-pwa-close]') && typeof modal !== 'undefined' && modal.open) modal.close();
+});

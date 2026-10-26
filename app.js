@@ -1,4 +1,4 @@
-const APP_VERSION = '325';
+const APP_VERSION = '326';
 const markPwaVersion = () => document.querySelectorAll('.topbar-actions').forEach(actions => {
   if (actions.querySelector('[data-pwa-version]')) return;
   const indicator = document.createElement('span');
@@ -1826,32 +1826,54 @@ function clientPlanEditor(client, offerContract = false) {
 // La entrenadora genera el enlace y lo comparte; el cliente define su propia
 // contraseña. Antes ella tenía que inventarla y comunicarla, y cada olvido la
 // obligaba a repetir el trámite a mano.
+// Texto listo para pegar en WhatsApp: el enlace (que sirve una sola vez) y, aparte, la dirección permanente del portal,
+// para que el cliente siempre tenga por dónde volver aunque el enlace ya no valga.
+function portalAccessMessage(client, enlace) {
+  const first = String(client.name || '').trim().split(/\s+/)[0] || '';
+  const site = new URL(enlace.url).origin;
+  return `Hola${first ? ` ${first}` : ''} 👋 Te comparto tu acceso al portal de Eileen Lifestyle, donde verás tus rutinas, tu agenda y tus pagos.\n\n` +
+    `1️⃣ Abre este enlace y crea tu contraseña (sirve una sola vez y vence en ${enlace.expiresInHours} horas):\n${enlace.url}\n\n` +
+    `2️⃣ Después, entra siempre desde ${site} con tu correo (${enlace.email}) y la contraseña que creaste.\n\n` +
+    `📲 Al terminar te muestro cómo dejar la app como un ícono en tu pantalla de inicio. Si algo no sale, escríbeme.`;
+}
 async function portalAccessLink(client) {
   const box = document.createElement('div');
-  box.innerHTML = `<p class="eyebrow">ACCESO AL PORTAL</p><h2>Enlace para ${escapeHtml(client.name)}</h2>
+  box.innerHTML = `<p class="eyebrow">ACCESO AL PORTAL</p><h2>Acceso para ${escapeHtml(client.name)}</h2>
     <div id="access-link-body"><p class="empty">Generando enlace…</p></div>`;
   openModal(box);
   try {
     const enlace = await api(`/api/clients/${client.id}/access-link`, { method: 'POST' });
     const target = document.getElementById('access-link-body');
     if (!target || !modal.open) return;
-    target.innerHTML = `<p style="color:#6f7b75;margin-top:-8px">${enlace.firstTime ? 'Primer acceso' : 'Recuperación de acceso'} · para <b>${escapeHtml(enlace.email)}</b></p>
-      <div class="access-link"><code id="access-link-url">${escapeHtml(enlace.url)}</code></div>
-      <button class="primary wide-button" id="access-link-copy">Copiar enlace</button>
-      <p class="section-note">Pásaselo por WhatsApp o como prefieras. Al abrirlo, ${escapeHtml(client.name)} define su propia contraseña y entra directo.<br><br>
-        Vence en ${enlace.expiresInHours} horas y sirve <b>una sola vez</b>. Generar uno nuevo anula el anterior. Tú nunca llegas a ver su contraseña.</p>`;
-    document.getElementById('access-link-copy').onclick = async event => {
-      try {
-        await navigator.clipboard.writeText(enlace.url);
-        event.target.textContent = 'Enlace copiado ✓';
-      } catch {
-        // Sin permiso de portapapeles —común en iOS fuera de un gesto directo—
-        // se selecciona el texto para que pueda copiarlo a mano.
-        const rango = document.createRange(); rango.selectNodeContents(document.getElementById('access-link-url'));
-        const seleccion = window.getSelection(); seleccion.removeAllRanges(); seleccion.addRange(rango);
-        event.target.textContent = 'Selecciónalo y cópialo';
+    const digits = typeof quotePhoneDigits === 'function' ? quotePhoneDigits(client.phone) : String(client.phone || '').replace(/\D/g, '');
+    const mensaje = portalAccessMessage(client, enlace);
+    target.innerHTML = `<p class="access-for">${enlace.firstTime ? '✨ Primer acceso' : '🔑 Recuperar acceso'} · para <b>${escapeHtml(enlace.email)}</b></p>
+      <p class="access-step"><b>1.</b> Revisa el mensaje (puedes cambiarlo) y envíaselo:</p>
+      <textarea id="access-message" class="access-message" rows="9" aria-label="Mensaje para el cliente">${escapeHtml(mensaje)}</textarea>
+      <div class="access-actions">
+        <a class="primary wide-button access-whatsapp" id="access-whatsapp" target="_blank" rel="noopener" href="">Enviar por WhatsApp</a>
+        <button type="button" class="secondary wide-button" id="access-copy-message">Copiar mensaje</button>
+        <button type="button" class="secondary wide-button" id="access-copy-link">Copiar solo el enlace</button>
+        <a class="secondary wide-button" id="access-mail" href="">Enviar por correo</a>
+      </div>
+      <p class="access-step"><b>2.</b> Cuando lo abra, ${escapeHtml(String(client.name).split(/\s+/)[0] || 'tu cliente')} crea su contraseña y entra directo. Le sale una guía para dejar la app como ícono en su teléfono.</p>
+      <p class="section-note">El enlace vence en ${enlace.expiresInHours} horas y sirve <b>una sola vez</b>; generar otro anula el anterior. Después de usarlo, tu cliente vuelve entrando a la dirección del portal con su correo y contraseña. Tú nunca ves su contraseña. ${digits ? '' : '<br><br>Este cliente no tiene teléfono guardado: WhatsApp te dejará elegir el contacto.'}</p>`;
+    const area = document.getElementById('access-message');
+    const refresh = () => {
+      document.getElementById('access-whatsapp').href = `https://wa.me/${digits}?text=${encodeURIComponent(area.value)}`;
+      document.getElementById('access-mail').href = `mailto:${encodeURIComponent(enlace.email)}?subject=${encodeURIComponent('Tu acceso a Eileen Lifestyle')}&body=${encodeURIComponent(area.value)}`;
+    };
+    area.addEventListener('input', refresh); refresh();
+    const copy = async (text, button, done) => {
+      try { await navigator.clipboard.writeText(text); button.textContent = done; }
+      catch {
+        // Sin permiso de portapapeles —común en iOS fuera de un gesto directo— se selecciona para copiarlo a mano.
+        if (button.id === 'access-copy-message') { area.focus(); area.select(); button.textContent = 'Selecciónalo y cópialo'; }
+        else { area.focus(); const start = area.value.indexOf(enlace.url); area.setSelectionRange(start, start + enlace.url.length); button.textContent = 'Selecciónalo y cópialo'; }
       }
     };
+    document.getElementById('access-copy-message').onclick = event => copy(area.value, event.target, 'Mensaje copiado ✓');
+    document.getElementById('access-copy-link').onclick = event => copy(enlace.url, event.target, 'Enlace copiado ✓');
   } catch (error) {
     const target = document.getElementById('access-link-body');
     if (target) target.innerHTML = `<p class="empty">${escapeHtml(error.message)}</p>`;
@@ -7554,12 +7576,18 @@ document.addEventListener('submit', async event => {
 window.addEventListener('popstate', () => { if (currentUser?.role === 'client') portalView(portalViewFromHash()); });
 window.addEventListener('hashchange', () => { if (currentUser?.role === 'client') portalView(portalViewFromHash()); });
 
+const lastEmailKey = 'eileen-lifestyle-ultimo-correo';
+const rememberEmail = email => { try { if (email) localStorage.setItem(lastEmailKey, String(email).toLowerCase()); } catch { /* sin almacenamiento: no pasa nada */ } };
+const rememberedEmail = () => { try { return localStorage.getItem(lastEmailKey) || ''; } catch { return ''; } };
 function showAuth(setupRequired) {
   document.getElementById('auth-screen').hidden = false; document.getElementById('app-shell').hidden = true; document.getElementById('portal-shell').hidden = true;
   document.getElementById('setup-form').hidden = !setupRequired; document.getElementById('login-form').hidden = setupRequired; document.getElementById('reset-form').hidden = true;
   document.getElementById('access-link-form').hidden = true;
   document.getElementById('auth-title').textContent = setupRequired ? 'Preparemos tu espacio' : 'Bienvenida de nuevo';
   document.getElementById('auth-copy').textContent = setupRequired ? 'Crea la primera cuenta administradora de Eileen Lifestyle.' : 'Accede al centro de control de clientes, sesiones y facturación.';
+  // Quien ya entró alguna vez en este aparato no vuelve a escribir su correo: solo la contraseña.
+  const loginEmail = document.querySelector('#login-form [name="email"]'); const recordado = rememberedEmail();
+  if (loginEmail && recordado && !loginEmail.value) { loginEmail.value = recordado; document.querySelector('#login-form [name="password"]')?.focus(); }
 }
 async function enterApp(user) {
   if (user.role === 'client') return enterPortal(user);
@@ -7573,7 +7601,7 @@ document.getElementById('login-form').addEventListener('submit', async event => 
   try {
     event.target.classList.add('loading-state');
     const result = await api('/api/auth/login', { method: 'POST', auth: false, body: { email: form.get('email'), password: form.get('password') } });
-    authToken = result.token; localStorage.setItem(authKey, authToken); await enterApp(result.user);
+    authToken = result.token; localStorage.setItem(authKey, authToken); rememberEmail(form.get('email')); await enterApp(result.user);
   } catch (error) { errorBox.textContent = error.message; } finally { event.target.classList.remove('loading-state'); }
 });
 document.getElementById('show-reset').addEventListener('click', () => {
@@ -7656,9 +7684,13 @@ async function showAccessLink(token) {
     if (authToken) { localStorage.removeItem(authKey); authToken = null; }
   } catch (error) {
     form.hidden = true;
-    document.getElementById('auth-title').textContent = 'Enlace no válido';
-    document.getElementById('auth-copy').textContent = error.message;
-    document.getElementById('login-form').hidden = false;
+    showAuth(false);
+    // El enlace sirve una sola vez y vence a las 48 horas: quien lo toca de nuevo suele ser alguien que YA creó su contraseña.
+    // No se le deja en un callejón: se le dice qué hacer y se le deja a un paso de entrar (con su correo ya escrito).
+    document.getElementById('auth-title').textContent = 'Este enlace ya se usó o venció';
+    document.getElementById('auth-copy').textContent = error.status && ![400, 404, 410].includes(error.status)
+      ? error.message
+      : 'No pasa nada. Si ya creaste tu contraseña, entra con tu correo y tu contraseña. Si no la recuerdas o el enlace venció, pídele a tu entrenadora uno nuevo.';
     // El enlace inservible se limpia de la barra para que recargar no repita
     // el error, y quede la pantalla normal de acceso.
     history.replaceState(null, '', location.pathname);
@@ -7677,11 +7709,12 @@ async function showAccessLink(token) {
     try {
       event.target.classList.add('loading-state');
       const result = await api(`/api/auth/access-link/${token}`, { method: 'POST', auth: false, body: { password: values.get('password') } });
-      authToken = result.token; localStorage.setItem(authKey, authToken);
+      authToken = result.token; localStorage.setItem(authKey, authToken); rememberEmail(result.user.email);
       history.replaceState(null, '', location.pathname);
       form.hidden = true;
       await enterApp(result.user);
-      toast('Contraseña guardada');
+      // Bienvenida con la dirección del portal y la guía del acceso directo: el enlace ya no sirve, esto es lo que le queda para volver.
+      if (typeof portalWelcome === 'function') portalWelcome(); else toast('Contraseña guardada');
     } catch (error) { errorBox.textContent = error.message; event.target.classList.remove('loading-state'); }
   }, { once: false });
 }
