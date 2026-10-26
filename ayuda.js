@@ -81,6 +81,15 @@ const whatsNewReleases = [
       { icon: '📲', title: 'Guía para instalar la app en el teléfono', text: 'Cuando tu cliente crea su contraseña le aparece una guía paso a paso, con pestañas para iPhone, Android y computadora, para dejar la app como un ícono en su pantalla de inicio. También la tiene en su portal y tú en tu centro de ayuda.', go: { label: 'Ver la guía', help: 'instalar-app' } },
       { icon: '✍️', title: 'Tu firma en los contratos', text: 'Si aún no guardaste tu firma, la app te lo avisa en la sección Contrato y te deja guardarla en un toque; si ya la tienes, puedes cambiarla desde ahí. Si enviaste un contrato antes de guardarla, al firmarlo el cliente se usa la que tengas en ese momento.', go: { label: 'Ir a Clientes', view: 'clients' } }
     ]
+  },
+  {
+    id: '2026-10-25-cotizador-ayuda-cumpleanos', version: 325, date: '25-10-2026', title: 'Cotizaciones, centro de ayuda y cumpleaños',
+    items: [
+      { icon: '🧾', title: 'Cotizaciones para tus clientes', text: 'Arma una propuesta con tus tarifas, un descuento y las cláusulas que quieras aplicar (como avisos). La compartes por WhatsApp, por enlace o en PDF y la app te avisa cuando la abren. Es informativa: no se convierte en factura.', go: { label: 'Ir a Cotizaciones', view: 'quotes' } },
+      { icon: '💡', title: 'Centro de ayuda', text: 'Guías paso a paso, con buscador, para cada parte de la app. Encuentras el botón **ⓘ Ayuda** en cada pantalla y el atajo «¿Necesitas ayuda?» en el Resumen.', go: { label: 'Abrir la ayuda', help: 'empezar' } },
+      { icon: '🎂', title: 'Aviso de cumpleaños de tus clientes', text: 'Te avisa dos días antes, en la campanita y con una notificación al teléfono, con un botón para felicitarles por WhatsApp. También ves los próximos en la tarjeta «Próximos cumpleaños» del Resumen. Para que funcione, guarda la fecha de nacimiento en el expediente de cada cliente.', go: { label: 'Ir al Resumen', view: 'dashboard' } },
+      { icon: '📱', title: 'Resumen en iPad', text: 'El indicador de adherencia ya no tapa la foto del Resumen cuando usas el iPad.' }
+    ]
   }
 ];
 

@@ -35,9 +35,13 @@ test('WN1) la lista de novedades está bien armada: ids con fecha y únicos, de 
       for (const item of r.items) { assert.ok(item.icon && item.title && item.text, `${r.id}: ícono, título y texto`); if (item.go) assert.ok(item.go.label && (item.go.help || item.go.view)); }
     }
     for (let i = 1; i < releases.length; i += 1) assert.ok(releases[i - 1].id > releases[i].id, 'de la más nueva a la más antigua');
-    // la primera versión cubre lo hecho desde el acceso al portal en adelante
-    const textos = JSON.stringify(releases[releases.length - 1].items);
-    for (const palabra of ['acceso', 'enlace', 'instalar', 'firma']) assert.ok(textos.toLowerCase().includes(palabra), `menciona ${palabra}`);
+    // la primera entrega cubre lo hecho desde el acceso al portal en adelante, y debajo lo anterior
+    const portal = releases.find(r => r.id.endsWith('acceso-portal-y-firma')); const anterior = releases.find(r => r.id.endsWith('cotizador-ayuda-cumpleanos'));
+    const textos = JSON.stringify(portal.items).toLowerCase();
+    for (const palabra of ['acceso', 'enlace', 'instalar', 'firma']) assert.ok(textos.includes(palabra), `menciona ${palabra}`);
+    const previo = JSON.stringify(anterior.items).toLowerCase();
+    for (const palabra of ['cotizaciones', 'ayuda', 'cumpleaños', 'ipad']) assert.ok(previo.includes(palabra), `menciona ${palabra}`);
+    assert.ok(portal.id > anterior.id, 'lo del portal va arriba de lo anterior');
   } finally { await p.cerrar(); }
 });
 
@@ -57,10 +61,12 @@ test('WN3) en pantalla sale UNA vez con las novedades, se marca como vista, no r
   const p = await abrirPantalla({ baseApi: servidor.base, token: tokenStaff, ancho: 375, novedades: true });
   try {
     await lista(p);
-    const aviso = await esperar(() => p.q('#modal-content .news-release'), { ms: 20000, mensaje: 'aviso de novedades' });
+    await esperar(() => p.q('#modal-content .news-release'), { ms: 20000, mensaje: 'aviso de novedades' });
     const texto = p.q('#modal-content').textContent;
     assert.match(texto, /Lo nuevo en tu app/); assert.match(texto, /Dar acceso al portal, listo en un toque/); assert.match(texto, /Guía para instalar la app en el teléfono/); assert.match(texto, /Tu firma en los contratos/);
-    assert.equal(p.qa('#modal-content .news-item', aviso).length, 4);
+    assert.equal(p.qa('#modal-content .news-item').length, 8, 'las dos entregas en el mismo aviso');
+    assert.equal(p.qa('#modal-content .news-release').length, 2); assert.match(texto, /Cotizaciones para tus clientes/); assert.match(texto, /Aviso de cumpleaños de tus clientes/);
+    assert.ok(texto.indexOf('Tu firma en los contratos') < texto.indexOf('Cotizaciones para tus clientes'), 'lo más nuevo primero');
     await esperar(async () => (await api.get('/api/whats-new')).datos.seen === p.evaluar('whatsNewReleases[0].id'), { mensaje: 'marcada como vista' });
     // un botón de la novedad lleva a donde dice
     p.clic(p.q('[data-whatsnew-go]'));
