@@ -2902,12 +2902,15 @@ async function signContractRecord(transaction: any, contract: Record<string, any
   await storePrivateSignature(signatureKey, 'image/png', validated.body);
   await storePrivateSignature(strokesKey, 'application/json', Buffer.from(JSON.stringify(validated.strokes as SignatureStroke[])));
   const signedAt = new Date();
+  // Si el contrato se envió antes de que Eileen guardara su firma, al firmarlo se usa la que tiene ahora: así no queda un espacio en
+  // blanco por un orden de pasos. Si ya tenía una, se respeta la que el cliente vio.
+  const ownerSignatureKey = contract.owner_signature_key || (await currentOwnerSignature(transaction, contract.owner_id)).key;
   const signer = age != null && age < 18 ? input.guardianName! : input.signedName;
   const acceptance = `\n\nACEPTACIÓN CON FIRMA MANUSCRITA\nFirmado por ${signer} el ${contractTimestamp(signedAt)} (Panamá), método ${method}.` +
     (age != null && age < 18 ? `\nRepresentante legal de ${input.signedName}: ${input.guardianName} · identificación ${input.guardianId}` : '');
   const bodyText = contract.body_text + acceptance;
   const pdf = await contractPdfWithSignatures({ title: 'Contrato de servicios', subtitle: contract.values.CLIENT_NAME + ' · firmado', body: bodyText,
-    values: contract.values, ownerSignatureKey: contract.owner_signature_key, clientSignatureImage: validated.body, signedAt,
+    values: contract.values, ownerSignatureKey, clientSignatureImage: validated.body, signedAt,
     signatureMethod: method, guardianName: age != null && age < 18 ? input.guardianName! : null,
     guardianId: age != null && age < 18 ? input.guardianId! : null, createdAt: signedAt });
   const hash = createHash('sha256').update(pdf).digest('hex');
@@ -2917,7 +2920,7 @@ async function signContractRecord(transaction: any, contract: Record<string, any
   const [signed] = await transaction`UPDATE client_contracts SET status = 'firmado', body_text = ${bodyText}, signed_at = ${signedAt},
     signed_name = ${input.signedName}, signed_ip = ${request.ip}, signed_user_agent = ${request.headers['user-agent'] || null},
     guardian_name = ${age != null && age < 18 ? input.guardianName! : null}, guardian_id = ${age != null && age < 18 ? input.guardianId! : null},
-    pdf_document_id = ${document.id}, pdf_sha256 = ${hash}, client_signature_key = ${signatureKey},
+    pdf_document_id = ${document.id}, pdf_sha256 = ${hash}, owner_signature_key = ${ownerSignatureKey}, client_signature_key = ${signatureKey},
     client_signature_strokes_key = ${strokesKey}, signature_method = ${method}, signed_in_person_by = ${staffUserId}
     WHERE id = ${contract.id} RETURNING *`;
   const noticeBody = method === 'presencial' ? 'El contrato se firmó presencialmente en el dispositivo de Eileen.' : 'El cliente firmó su contrato desde el portal.';

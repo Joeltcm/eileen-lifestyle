@@ -46,7 +46,8 @@ test('PA1) Eileen genera el acceso: mensaje listo con el enlace y la dirección 
 test('PA2) el cliente abre el enlace, crea su contraseña y ve la bienvenida con la guía para instalar la app', async () => {
   const p = await abrirPantalla({ baseApi: servidor.base, token: null, hash: `#acceso=${tokenDelEnlace}`, ancho: 375 });
   try {
-    await esperar(() => !p.q('#access-link-form').hidden, { mensaje: 'formulario de contraseña' });
+    // el formulario aparece solo cuando el enlace ya fue verificado (antes no había a quién enviar la contraseña)
+    await esperar(() => !p.q('#access-link-form').hidden, { ms: 20000, mensaje: 'formulario de contraseña' });
     p.cambiar(p.q('#access-link-form [name="password"]'), 'mi-clave-nueva-larga'); p.cambiar(p.q('#access-link-form [name="confirm"]'), 'mi-clave-nueva-larga');
     p.q('#access-link-form').dispatchEvent(new p.window.Event('submit', { bubbles: true, cancelable: true }));
     await esperar(() => p.q('#modal-content .pwa-guide'), { ms: 40000, mensaje: 'bienvenida con la guía' });

@@ -460,6 +460,12 @@ const helpTopics = [
         { text: '**En persona:** desde un borrador, el cliente firma con el dedo o con Apple Pencil en tu aparato.' },
         { text: '**En papel:** firma el documento impreso, lo escaneas y lo subes al expediente.' }
       ]),
+      helpSteps('Tu firma sale sola', [
+        { text: 'Guárdala **una sola vez**: en la sección Contrato del expediente (o al generar un contrato) toca «Guardar mi firma ahora», fírmala con el dedo o el Apple Pencil, o sube una foto de tu firma.' },
+        { text: 'Desde entonces aparece en el lugar de «Eileen» en todos los contratos: en el borrador, al enviarlo y al firmarlo. El cliente es **el único que firma**.' },
+        { text: 'Si no la has guardado, la app te lo avisa en el contrato. Si lo enviaste antes de guardarla, no pasa nada: al firmarlo el cliente se usa la firma que tengas en ese momento.' },
+        { text: 'Para cambiarla, toca «Cambiar mi firma» en esa misma sección. Los contratos que ya están firmados no se modifican.' }
+      ]),
       helpP('Un contrato **firmado no se puede cambiar**. Si algo cambia, se genera uno nuevo. El documento firmado queda en el expediente y en los documentos del cliente.'),
       helpNote('Tus datos legales (nombre, identificación, domicilio y firma) se escriben una vez en «Ajustes de la cuenta». El texto de las cláusulas está pendiente de revisión jurídica: es una plantilla de trabajo.'),
       helpFaq([

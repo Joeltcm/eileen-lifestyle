@@ -1,4 +1,4 @@
-const APP_VERSION = '326';
+const APP_VERSION = '328';
 const markPwaVersion = () => document.querySelectorAll('.topbar-actions').forEach(actions => {
   if (actions.querySelector('[data-pwa-version]')) return;
   const indicator = document.createElement('span');
@@ -5406,14 +5406,45 @@ async function downloadContract(contractId) {
   const link = document.createElement('a'); link.href = url; link.download = 'contrato.pdf'; link.click();
   setTimeout(() => URL.revokeObjectURL(url), 60000);
 }
+// Firma de Eileen en los contratos: aviso cuando falta y acceso directo para guardarla o cambiarla sin ir a los ajustes de la cuenta.
+let ownerSignatureCache = null;
+async function ownerSignatureState() {
+  const settings = await api('/api/account-settings');
+  ownerSignatureCache = { saved: Boolean(settings.has_owner_signature), legalName: settings.legal_name || '', legalId: settings.legal_id || '' };
+  return ownerSignatureCache;
+}
+async function captureOwnerSignature() {
+  const state = ownerSignatureCache || await ownerSignatureState();
+  const signature = await openSignatureCapture({ title: 'Firma de Eileen', allowUpload: true, previewName: state.legalName, previewLegalId: state.legalId });
+  if (!signature) return false;
+  await api('/api/account-settings/signature', { method: 'POST', body: signature });
+  ownerSignatureCache = { ...state, saved: true };
+  return true;
+}
+async function ownerSignatureNotice(slot, { onSaved } = {}) {
+  if (!slot) return;
+  let state; try { state = await ownerSignatureState(); } catch { return; }
+  slot.innerHTML = state.saved
+    ? '<div class="owner-sign-notice ok"><span aria-hidden="true">✍️</span><p>Tu firma saldrá sola en el contrato.</p><button type="button" class="text-button" data-owner-sign>Cambiar mi firma</button></div>'
+    : '<div class="owner-sign-notice warn" role="alert"><span aria-hidden="true">✍️</span><div><b>Aún no has guardado tu firma</b><p>El contrato saldrá con el espacio de tu firma en blanco y, una vez firmado por el cliente, ya no se puede cambiar. Guárdala una sola vez y aparecerá sola en todos los contratos.</p></div><button type="button" class="primary" data-owner-sign>Guardar mi firma ahora</button></div>';
+  slot.querySelector('[data-owner-sign]').onclick = async () => {
+    try {
+      if (!(await captureOwnerSignature())) return;
+      toast('Firma guardada');
+      await ownerSignatureNotice(slot, { onSaved });
+      if (onSaved) await onSaved();
+    } catch (error) { toast(error.message, true); }
+  };
+}
 async function clientContractsSection(target, client) {
   if (!target) return;
   try {
     const contracts = await api(`/api/clients/${client.id}/contracts`);
     if (!target.isConnected) return;
     const label = value => ({ borrador: 'Borrador', enviado: 'Pendiente de firma', firmado: 'Firmado', reemplazado: 'Reemplazado', anulado: 'Anulado' }[value] || value);
-    target.innerHTML = `${contracts.length ? contracts.map(contract => `<div class="viaje-fila"><div><b>${label(contract.status)} · ${contract.template_key}${contract.is_test ? ' · <span class="status estado-demo">PRUEBA</span>' : ''}</b><small>${contract.signed_at ? `Firmado ${fechaCorta(contract.signed_at)}${contract.signature_method ? ` · ${contract.signature_method === 'presencial' ? 'presencial' : contract.signature_method}` : ''}` : contract.sent_at ? `Enviado ${fechaCorta(contract.sent_at)}` : 'Sin enviar'}${contract.signed_name ? ` · ${escapeHtml(contract.signed_name)}` : ''}</small></div><div class="viaje-acciones"><button type="button" class="secondary" data-contract-download="${contract.id}">Descargar PDF</button>${contract.status === 'borrador' ? `<button type="button" class="primary" data-contract-send="${contract.id}">Enviar al portal</button>` : ''}${['borrador', 'enviado'].includes(contract.status) ? `<button type="button" class="primary contract-in-person" data-contract-in-person="${contract.id}">Firmar en este dispositivo</button>` : ''}${['borrador', 'enviado'].includes(contract.status) ? `<button type="button" class="secondary" data-contract-paper="${contract.id}">Firmado en papel</button><button type="button" class="secondary" data-contract-edit="${contract.id}">Editar</button>` : ''}${!contract.signed_at || contract.is_test ? `<button type="button" class="secondary danger" data-contract-delete="${contract.id}">Eliminar${contract.signed_at ? ' (prueba)' : ''}</button>` : ''}</div></div>`).join('') : '<p class="empty">Sin contrato.</p>'}<button type="button" class="primary wide-button" id="generate-client-contract">Generar contrato</button><button type="button" class="secondary wide-button" id="contract-whatsapp">Enviar por WhatsApp</button>`;
+    target.innerHTML = `<div id="owner-sign-slot"></div>${contracts.length ? contracts.map(contract => `<div class="viaje-fila"><div><b>${label(contract.status)} · ${contract.template_key}${contract.is_test ? ' · <span class="status estado-demo">PRUEBA</span>' : ''}</b><small>${contract.signed_at ? `Firmado ${fechaCorta(contract.signed_at)}${contract.signature_method ? ` · ${contract.signature_method === 'presencial' ? 'presencial' : contract.signature_method}` : ''}` : contract.sent_at ? `Enviado ${fechaCorta(contract.sent_at)}` : 'Sin enviar'}${contract.signed_name ? ` · ${escapeHtml(contract.signed_name)}` : ''}</small></div><div class="viaje-acciones"><button type="button" class="secondary" data-contract-download="${contract.id}">Descargar PDF</button>${contract.status === 'borrador' ? `<button type="button" class="primary" data-contract-send="${contract.id}">Enviar al portal</button>` : ''}${['borrador', 'enviado'].includes(contract.status) ? `<button type="button" class="primary contract-in-person" data-contract-in-person="${contract.id}">Firmar en este dispositivo</button>` : ''}${['borrador', 'enviado'].includes(contract.status) ? `<button type="button" class="secondary" data-contract-paper="${contract.id}">Firmado en papel</button><button type="button" class="secondary" data-contract-edit="${contract.id}">Editar</button>` : ''}${!contract.signed_at || contract.is_test ? `<button type="button" class="secondary danger" data-contract-delete="${contract.id}">Eliminar${contract.signed_at ? ' (prueba)' : ''}</button>` : ''}</div></div>`).join('') : '<p class="empty">Sin contrato.</p>'}<button type="button" class="primary wide-button" id="generate-client-contract">Generar contrato</button><button type="button" class="secondary wide-button" id="contract-whatsapp">Enviar por WhatsApp</button>`;
     target.querySelector('#generate-client-contract').onclick = () => contractEditor(client);
+    ownerSignatureNotice(target.querySelector('#owner-sign-slot'));
     target.querySelectorAll('[data-contract-download]').forEach(button => { button.onclick = () => downloadContract(button.dataset.contractDownload).catch(error => toast(error.message, true)); });
     target.querySelectorAll('[data-contract-send]').forEach(button => { button.onclick = async () => { try { await api(`/api/contracts/${button.dataset.contractSend}/send`, { method: 'POST', body: {} }); await loadData(); renderAll(); await clientContractsSection(target, client); toast('Contrato enviado al portal'); } catch (error) { toast(error.message, true); } }; });
     target.querySelectorAll('[data-contract-paper]').forEach(button => { button.onclick = () => paperContractDialog(client, button.dataset.contractPaper); });
@@ -5433,8 +5464,9 @@ async function clientContractsSection(target, client) {
   } catch (error) { if (target.isConnected) target.innerHTML = `<p class="empty">${escapeHtml(error.message)}</p>`; }
 }
 async function inPersonContractDialog(client, contractId) {
-  const box = document.createElement('div'); box.innerHTML = `<form id="in-person-contract"><p class="eyebrow">FIRMA PRESENCIAL</p><h2>Firmar en este dispositivo</h2><p class="section-note">Entrega el iPad a ${escapeHtml(client.name)}. Debe leer hasta el final, confirmar su nombre y dibujar su firma.</p><pre class="contract-text" tabindex="0">Cargando contrato…</pre><label class="checkbox-line"><input name="accept" type="checkbox" required disabled /> He leído y acepto este contrato</label><label>Nombre completo como aparece en el contrato<input name="signedName" required value="${escapeHtml(client.name)}" /></label><div id="in-person-guardian" hidden><label>Nombre del representante legal<input name="guardianName" /></label><label>Identificación del representante<input name="guardianId" /></label></div><button class="primary wide-button" disabled>Continuar a firmar</button></form>`; openModal(box, true);
+  const box = document.createElement('div'); box.innerHTML = `<form id="in-person-contract"><p class="eyebrow">FIRMA PRESENCIAL</p><h2>Firmar en este dispositivo</h2><div id="owner-sign-slot"></div><p class="section-note">Entrega el iPad a ${escapeHtml(client.name)}. Debe leer hasta el final, confirmar su nombre y dibujar su firma.</p><pre class="contract-text" tabindex="0">Cargando contrato…</pre><label class="checkbox-line"><input name="accept" type="checkbox" required disabled /> He leído y acepto este contrato</label><label>Nombre completo como aparece en el contrato<input name="signedName" required value="${escapeHtml(client.name)}" /></label><div id="in-person-guardian" hidden><label>Nombre del representante legal<input name="guardianName" /></label><label>Identificación del representante<input name="guardianId" /></label></div><button class="primary wide-button" disabled>Continuar a firmar</button></form>`; openModal(box, true);
   const form = box.querySelector('form'); const text = box.querySelector('.contract-text'); const submit = form.querySelector('button'); let loaded = false; let read = false;
+  ownerSignatureNotice(box.querySelector('#owner-sign-slot'));
   const update = () => { if (loaded && text.scrollTop + text.clientHeight >= text.scrollHeight - 2) read = true; form.elements.accept.disabled = !read; submit.disabled = !read || !form.elements.accept.checked; };
   text.addEventListener('scroll', update); form.elements.accept.addEventListener('change', update);
   try { const result = await api(`/api/contracts/${contractId}/download`); text.textContent = result.bodyText; loaded = true; box.querySelector('#in-person-guardian').hidden = !result.requiresGuardian; form.elements.guardianName.required = result.requiresGuardian; form.elements.guardianId.required = result.requiresGuardian; requestAnimationFrame(update); }
@@ -5487,7 +5519,7 @@ function contractEditor(client, existing = null) {
     const isCredit = (terms.templateKey || initial.templateKey) === 'credito' || terms.paymentMode === 'no_anticipado';
     box.innerHTML = `<form id="contract-editor"><p class="eyebrow">CONTRATO INFORMATIVO · BORRADOR PARA REVISIÓN LEGAL</p><h2>${existing ? 'Editar contrato' : 'Generar contrato'}</h2>${existing ? `<p class="section-note">Al guardar se actualizan el texto y el PDF con los montos y clases nuevos.${existing.status === 'enviado' ? ' Como ya estaba enviado, vuelve a borrador: tendrás que enviarlo de nuevo para que lo firme.' : ''}</p>` : ''}
       <p class="section-note">Estos términos quedan únicamente en el contrato. No cambian el expediente, el plan de facturación, las facturas ni los saldos.</p>
-      <div id="contract-missing"></div><div id="contract-warning"></div>
+      <div id="owner-sign-slot"></div><div id="contract-missing"></div><div id="contract-warning"></div>
       ${isCredit ? '<p class="contract-type"><b>Contrato de cliente a crédito</b> · según su expediente (paga cada clase al cierre del mes).</p><input name="templateKey" type="hidden" value="credito" />' : '<p class="contract-type"><b>Cliente de pago anticipado</b> · según su expediente.</p><label>Modelo<select name="templateKey"><option value="mensualidad">Mensualidad anticipada (sugerida)</option><option value="paquete">Paquete</option><option value="rutinas">Rutinas personalizadas</option></select></label>'}
       <input name="planName" type="hidden" value="${escapeHtml(terms.planName || 'Acuerdo personalizado')}" />
       <div class="form-row"><label><span id="contract-quantity-label">Sesiones al mes</span><input name="quantity" type="number" min="1" max="366" value="${terms.quantity || ''}" required /></label>${isCredit ? '<input name="price" type="hidden" value="" />' : `<label>Precio declarado (USD)<input name="price" type="number" min="0.01" max="100000" step="0.01" value="${terms.price || ''}" required /></label>`}</div>
@@ -5516,6 +5548,7 @@ function contractEditor(client, existing = null) {
       form.dataset.canSend = result.canSend ? 'true' : 'false';
     };
     const refreshPreview = async () => { const result = await api(`/api/clients/${client.id}/contracts/preview`, { method: 'POST', body: payload(false) }); renderPreview(result); return result; };
+    ownerSignatureNotice(box.querySelector('#owner-sign-slot'), { onSaved: () => refreshPreview().catch(error => toast(error.message, true)) });
     box.querySelectorAll('[data-contract-option]').forEach(button => button.onclick = async () => {
       const option = options[Number(button.dataset.contractOption)];
       form.elements.templateKey.value = option.templateKey; form.elements.quantity.value = option.quantity; form.elements.price.value = option.price;
@@ -7670,7 +7703,8 @@ async function showAccessLink(token) {
   document.getElementById('auth-screen').hidden = false;
   document.getElementById('app-shell').hidden = true; document.getElementById('portal-shell').hidden = true;
   for (const id of ['login-form', 'setup-form', 'reset-form']) document.getElementById(id).hidden = true;
-  const form = document.getElementById('access-link-form'); form.hidden = false;
+  // El formulario se muestra solo cuando el enlace ya está verificado: antes no tiene a quién enviar la contraseña.
+  const form = document.getElementById('access-link-form'); form.hidden = true;
   const errorBox = document.getElementById('access-link-error');
 
   try {
@@ -7678,6 +7712,7 @@ async function showAccessLink(token) {
     document.getElementById('auth-title').textContent = 'Define tu contraseña';
     document.getElementById('auth-copy').textContent = 'Elige una contraseña para entrar a tu portal. Solo tú la conocerás.';
     document.getElementById('access-link-greeting').textContent = `${info.clientName} · ${info.email}`;
+    form.hidden = false;
     // La sesión guardada se cierra sólo ahora, con el enlace ya confirmado.
     // Hacerlo antes sacaba de su cuenta a quien tocara un enlace vencido, que
     // suele ser la entrenadora volviendo a un mensaje viejo.

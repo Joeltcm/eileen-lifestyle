@@ -1182,3 +1182,9 @@ code{background:#f4ecf0;border-radius:6px;padding:1px 6px;font:12px 'DM Mono'}
 .pwa-steps li{counter-increment:pwa;position:relative;padding:12px 12px 12px 46px;border:1px solid #f1e5ea;border-radius:14px;background:#fffdfc;line-height:1.5;font-size:14.5px}
 .pwa-steps li:before{content:counter(pwa);position:absolute;left:12px;top:11px;width:26px;height:26px;border-radius:50%;display:grid;place-items:center;background:linear-gradient(135deg,#f3c4d5,#e6b2c6);color:#49343e;font:700 13px 'DM Sans'}
 .pwa-problems-title{margin:6px 0 0;font:600 17px Fraunces,serif}.portal-guide .pwa-open{margin-top:12px;min-height:46px}
+
+/* Contratos: la firma de Eileen (aviso si falta, acceso directo si ya está). */
+.owner-sign-notice{display:flex;align-items:center;gap:12px;margin:10px 0;padding:12px 14px;border-radius:14px;border:1px solid #efc9d8;background:linear-gradient(135deg,#fdeef4,#fffdfc)}
+.owner-sign-notice>span{font-size:22px;flex:0 0 auto}.owner-sign-notice p{margin:2px 0 0;color:var(--ink-2);font-size:13.5px;line-height:1.45}.owner-sign-notice b{font:600 14.5px 'DM Sans'}
+.owner-sign-notice.ok{border-color:#dcebe0;background:#f4faf5;padding:8px 12px}.owner-sign-notice.ok p{margin:0;flex:1}.owner-sign-notice.warn>div{flex:1;min-width:0}.owner-sign-notice button{flex:0 0 auto;min-height:44px}
+@media(max-width:600px){.owner-sign-notice.warn{flex-wrap:wrap}.owner-sign-notice.warn button{width:100%}}
