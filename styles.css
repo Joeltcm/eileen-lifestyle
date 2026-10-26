@@ -1159,3 +1159,13 @@ code{background:#f4ecf0;border-radius:6px;padding:1px 6px;font:12px 'DM Mono'}
 .birthday-day{flex:0 0 46px;height:46px;border-radius:12px;display:grid;place-content:center;text-align:center;background:#f6e6ed;color:#7a4560}.birthday-day b{font:600 18px/1 Fraunces,serif}.birthday-day small{font-size:10.5px;text-transform:uppercase;letter-spacing:.6px}
 .birthday-who{flex:1;min-width:0;display:grid;gap:1px}.birthday-who b{font:600 14.5px 'DM Sans';overflow-wrap:anywhere}.birthday-who small{color:var(--muted);font-size:12.5px}
 .birthday-wa{flex:0 0 auto;display:inline-flex;align-items:center;justify-content:center;min-height:44px;padding:0 14px;text-decoration:none}.birthday-more{margin:4px 2px 0;color:var(--muted);font-size:12.5px}
+
+/* Resumen en iPad y pantallas medianas: la burbuja de adherencia caía sobre la cara de Eileen en la foto (medido a 768, 834, 1024 y 1180 px).
+   Se achica y baja a la derecha, debajo de la cara y por encima de la tarjeta "completadas"; sin el texto pequeño, que se descuadraba. */
+@media (min-width:601px) and (max-width:1279px){
+  body .hero-score{width:86px;height:86px;top:auto;bottom:76px;right:14px}
+  body .hero-score strong{font-size:24px;line-height:22px}
+  body .hero-score>span{font-size:6.5px}
+  body .hero-score small{display:none}
+  body .stat-two{bottom:8px;right:6px}
+}

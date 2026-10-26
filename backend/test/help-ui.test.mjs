@@ -143,3 +143,9 @@ test('HU7) el atajo de ayuda del Resumen es una franja propia, no un botón dent
     await esperar(() => p.q('#help-root #help-search'), { mensaje: 'abre el centro de ayuda' });
   } finally { await p.cerrar(); }
 });
+
+test('HU8) en iPad la burbuja de adherencia del Resumen se aparta de la cara de Eileen (regla de tablet presente)', () => {
+  const css = leer('styles.css');
+  assert.match(css, /@media \(min-width:601px\) and \(max-width:1279px\)\{\s*body \.hero-score\{width:86px;height:86px;top:auto;bottom:76px;right:14px\}/, 'burbuja pequeña, abajo a la derecha, en el rango de tablet');
+  assert.match(css, /body \.hero-score small\{display:none\}/);
+});
