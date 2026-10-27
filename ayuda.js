@@ -74,6 +74,12 @@ const pwaGuide = {
 // Las correcciones pequeñas que nadie nota no necesitan entrada. Los nombres de pantallas y botones van entre «comillas angulares».
 const whatsNewReleases = [
   {
+    id: '2026-10-26-google-calendar-sin-duplicados', version: 331, date: '26-10-2026', title: 'Google Calendar sin clases repetidas',
+    items: [
+      { icon: '📅', title: 'Cada clase aparece una sola vez en tu Google Calendar', text: 'Arreglamos el motivo por el que una misma clase podía salir dos o más veces en tu calendario. Las repetidas que ya había se retiran solas la próxima vez que se sincronice (al abrir la app): se queda la buena y no se toca ningún evento tuyo que no venga de la app.' }
+    ]
+  },
+  {
     id: '2026-10-26-acceso-portal-y-firma', version: 328, date: '26-10-2026', title: 'Acceso al portal más fácil y tu firma en los contratos',
     items: [
       { icon: '🔑', title: 'Dar acceso al portal, listo en un toque', text: 'Al generar el acceso de un cliente ya sale un mensaje escrito con su enlace y la dirección del portal. Lo mandas por WhatsApp (abre el chat con su número), por correo o lo copias, y puedes editarlo antes de enviarlo.', go: { label: 'Ver cómo funciona', help: 'portal' } },

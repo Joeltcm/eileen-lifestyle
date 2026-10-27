@@ -159,28 +159,66 @@ export function buildGoogleCalendarEvent(session: GoogleRecord) {
   };
 }
 
+// Un evento por sesión, aunque dos llamadas coincidan o una respuesta se pierda.
+//  · El evento se crea con un id que sale de la propia sesión (base32hex, lo que Google exige: 0-9 y a-v). Si la llamada se repite,
+//    Google contesta 409 «ya existe» y se actualiza ese mismo evento en vez de crear otro.
+//  · Las llamadas sobre la MISMA sesión se ponen en fila: el envío inmediato y la sincronización periódica ya no compiten.
+const sessionQueues = new Map<string, Promise<unknown>>();
+function withSessionLock<T>(sessionId: string, work: () => Promise<T>): Promise<T> {
+  const previous = sessionQueues.get(sessionId) ?? Promise.resolve();
+  const next = previous.catch(() => undefined).then(work);
+  sessionQueues.set(sessionId, next);
+  next.finally(() => { if (sessionQueues.get(sessionId) === next) sessionQueues.delete(sessionId); }).catch(() => undefined);
+  return next;
+}
+export const googleEventIdFor = (sessionId: string) => `eileen${String(sessionId).replace(/-/g, '').toLowerCase()}`;
+
 async function saveEvent(token: string, connection: CalendarConnection, session: GoogleRecord) {
-  const calendarId = encodeURIComponent(connection.organization_id || 'primary');
-  const body = JSON.stringify(buildGoogleCalendarEvent(session));
-  let event: GoogleRecord;
-  if (session.google_event_id) {
-    try {
-      event = await googleRequest(token, `/calendars/${calendarId}/events/${encodeURIComponent(session.google_event_id)}?sendUpdates=none`, { method: 'PATCH', body });
-    } catch (error) {
-      if (!(error instanceof GoogleCalendarError) || ![404, 410].includes(error.status)) throw error;
-      event = await googleRequest(token, `/calendars/${calendarId}/events?sendUpdates=none`, { method: 'POST', body });
+  return withSessionLock(String(session.id), async () => {
+    const calendarId = encodeURIComponent(connection.organization_id || 'primary');
+    const eventPath = (id: string) => `/calendars/${calendarId}/events/${encodeURIComponent(id)}?sendUpdates=none`;
+    const base = buildGoogleCalendarEvent(session);
+    // La fila que llega pudo quedar vieja mientras esta llamada esperaba su turno: otra pudo haber creado ya el evento.
+    const [fresh] = await sql`SELECT google_event_id FROM sessions WHERE id = ${session.id}`;
+    const storedId: string | null = fresh?.google_event_id ?? session.google_event_id ?? null;
+
+    const createEvent = async (): Promise<GoogleRecord> => {
+      const id = googleEventIdFor(String(session.id));
+      try {
+        return await googleRequest(token, `/calendars/${calendarId}/events?sendUpdates=none`, { method: 'POST', body: JSON.stringify({ ...base, id }) });
+      } catch (error) {
+        if (!(error instanceof GoogleCalendarError) || error.status !== 409) throw error;
+        // Ya existe (o existió y está cancelado): se actualiza ese mismo y se confirma.
+        try {
+          return await googleRequest(token, eventPath(id), { method: 'PATCH', body: JSON.stringify({ ...base, status: 'confirmed' }) });
+        } catch (inner) {
+          if (!(inner instanceof GoogleCalendarError) || ![404, 410].includes(inner.status)) throw inner;
+          // El id quedó reservado y no se puede recuperar: evento nuevo con id propio de Google, como antes.
+          return googleRequest(token, `/calendars/${calendarId}/events?sendUpdates=none`, { method: 'POST', body: JSON.stringify(base) });
+        }
+      }
+    };
+
+    let event: GoogleRecord;
+    if (storedId) {
+      try {
+        event = await googleRequest(token, eventPath(storedId), { method: 'PATCH', body: JSON.stringify(base) });
+      } catch (error) {
+        if (!(error instanceof GoogleCalendarError) || ![404, 410].includes(error.status)) throw error;
+        event = await createEvent();
+      }
+    } else {
+      event = await createEvent();
     }
-  } else {
-    event = await googleRequest(token, `/calendars/${calendarId}/events?sendUpdates=none`, { method: 'POST', body });
-  }
-  await sql`
-    UPDATE sessions SET google_event_id = ${String(event.id)}, google_event_link = ${event.htmlLink ? String(event.htmlLink) : null},
-      google_event_updated_at = ${event.updated ? String(event.updated) : new Date().toISOString()},
-      google_event_etag = ${event.etag ? String(event.etag) : null}, google_synced_at = now(), google_sync_error = NULL,
-      updated_at = now()
-    WHERE id = ${session.id}
-  `;
-  return event;
+    await sql`
+      UPDATE sessions SET google_event_id = ${String(event.id)}, google_event_link = ${event.htmlLink ? String(event.htmlLink) : null},
+        google_event_updated_at = ${event.updated ? String(event.updated) : new Date().toISOString()},
+        google_event_etag = ${event.etag ? String(event.etag) : null}, google_synced_at = now(), google_sync_error = NULL,
+        updated_at = now()
+      WHERE id = ${session.id}
+    `;
+    return event;
+  });
 }
 
 async function eileenEventsFromGoogle(token: string, connection: CalendarConnection) {
@@ -232,6 +270,38 @@ export async function pullGoogleChanges(ownerId: string, token: string, connecti
       huerfanosRetirados += 1;
     } catch { /* si ya no está, mejor */ }
   }
+
+  // Duplicados: una sesión viva con DOS o más eventos nuestros en el calendario (los dejaban las llamadas simultáneas de antes).
+  // Se conserva el que la sesión tiene guardado (o, si no apunta a ninguno vivo, el que lleva el id de la sesión o el más antiguo) y
+  // se borran los demás. Un evento solo se borra si la sesión sigue teniendo otro vivo: nunca se deja una sesión sin evento.
+  const vivosPorSesion = new Map<string, GoogleRecord[]>();
+  for (const event of events) {
+    if (event.status === 'cancelled') continue;
+    const marcada = String(event.extendedProperties?.private?.eileenSessionId || '');
+    if (!marcada || !idsVivas.has(marcada)) continue;
+    vivosPorSesion.set(marcada, [...(vivosPorSesion.get(marcada) || []), event]);
+  }
+  const duplicadosRetirados = new Set<string>();
+  for (const [sessionId, eventosDeLaSesion] of vivosPorSesion) {
+    if (eventosDeLaSesion.length < 2) continue;
+    const guardado = byId.get(sessionId)?.google_event_id ? String(byId.get(sessionId)!.google_event_id) : null;
+    const porAntiguedad = [...eventosDeLaSesion].sort((a, b) => String(a.created || '').localeCompare(String(b.created || '')));
+    const conservado = eventosDeLaSesion.find(event => String(event.id) === guardado)
+      ?? eventosDeLaSesion.find(event => String(event.id) === googleEventIdFor(sessionId)) ?? porAntiguedad[0];
+    for (const event of eventosDeLaSesion) {
+      if (event === conservado) continue;
+      try {
+        await googleRequest(token, `/calendars/${calendarId}/events/${encodeURIComponent(String(event.id))}?sendUpdates=none`, { method: 'DELETE' });
+        duplicadosRetirados.add(String(event.id));
+      } catch { /* se reintenta en la próxima sincronización */ }
+    }
+    if (guardado !== String(conservado.id)) {
+      await sql`UPDATE sessions SET google_event_id = ${String(conservado.id)}, google_event_link = ${conservado.htmlLink ? String(conservado.htmlLink) : null},
+        google_event_updated_at = ${conservado.updated ? String(conservado.updated) : new Date().toISOString()}, google_event_etag = ${conservado.etag ? String(conservado.etag) : null}, google_sync_error = NULL WHERE id = ${sessionId}`;
+      const fila = byId.get(sessionId); if (fila) fila.google_event_id = String(conservado.id);
+    }
+  }
+  if (duplicadosRetirados.size) { for (let i = events.length - 1; i >= 0; i -= 1) if (duplicadosRetirados.has(String(events[i].id))) events.splice(i, 1); }
 
   for (const event of events) {
     const sessionId = event.extendedProperties?.private?.eileenSessionId;
@@ -305,7 +375,7 @@ export async function pullGoogleChanges(ownerId: string, token: string, connecti
     if (scheduleChanged) updatedFromGoogle += 1;
     if (localDirty) conflictsResolved += 1;
   }
-  return { updatedFromGoogle, checkedFromGoogle: events.length, conflictsResolved, huerfanosRetirados };
+  return { updatedFromGoogle, checkedFromGoogle: events.length, conflictsResolved, huerfanosRetirados, duplicadosRetirados: duplicadosRetirados.size };
 }
 
 async function connectionFor(ownerId: string) {
@@ -400,7 +470,7 @@ export async function removeSessionFromGoogle(ownerId: string, sessionId: string
   return { removed: true };
 }
 
-async function syncFutureSessions(ownerId: string): Promise<GoogleSyncResult> {
+export async function syncFutureSessions(ownerId: string): Promise<GoogleSyncResult> {
   if (synchronizationLocks.has(ownerId)) {
     return { synced: 0, failed: 0, total: 0, errors: [], updatedFromGoogle: 0, checkedFromGoogle: 0, conflictsResolved: 0, alreadyRunning: true };
   }
