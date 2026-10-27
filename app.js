@@ -1,4 +1,4 @@
-const APP_VERSION = '332';
+const APP_VERSION = '333';
 const markPwaVersion = () => document.querySelectorAll('.topbar-actions').forEach(actions => {
   if (actions.querySelector('[data-pwa-version]')) return;
   const indicator = document.createElement('span');
@@ -3109,7 +3109,7 @@ function renderCatalogList() {
   });
 }
 
-const routineDeliveryLabels = { assignment: 'Asignación', assignment_link: 'Asignación y enlace', link: 'Enlace', offer: 'Oferta por una clase', travel_link: 'Enlace de viaje', new_version: 'Nueva versión' };
+const routineDeliveryLabels = { assignment: 'Asignación', assignment_link: 'Asignación y enlace', assignment_travel_link: 'Asignación y enlace de viaje', link: 'Enlace', offer: 'Oferta por una clase', travel_link: 'Enlace de viaje', new_version: 'Nueva versión' };
 const routineCompletionLabel = item => item.completed
   ? `Cumplida${item.completed_on ? ` · ${fechaHoraPanama(item.completed_on, false)}` : ''}${item.completion_percent != null ? ` · ${Number(item.completion_percent)}%` : ''}`
   : 'Sin confirmar';

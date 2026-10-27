@@ -4512,7 +4512,7 @@ app.get('/api/clients/:id/routine-deliveries', { preHandler: requireStaff }, asy
     WITH raw AS (
       SELECT d.*, COALESCE(r.root_routine_id, r.id) AS root_id,
         (d.sent_at AT TIME ZONE 'America/Panama')::date AS sent_day,
-        CASE WHEN d.offer_id IS NULL AND d.kind IN ('assignment', 'link')
+        CASE WHEN d.offer_id IS NULL AND d.kind IN ('assignment', 'link', 'travel_link')
           THEN concat(COALESCE(r.root_routine_id, r.id)::text, '|', (d.sent_at AT TIME ZONE 'America/Panama')::date::text, '|', COALESCE(d.due_on::text, ''))
           ELSE d.id::text END AS group_key
       FROM routine_deliveries d JOIN routines r ON r.id = d.routine_id
@@ -4521,7 +4521,7 @@ app.get('/api/clients/:id/routine-deliveries', { preHandler: requireStaff }, asy
       SELECT group_key, client_id, root_id, min(sent_at) AS group_start,
         max(sent_at) FILTER (WHERE NOT (backfilled AND kind = 'assignment')) AS real_sent_at,
         bool_and(backfilled AND kind = 'assignment') AS sent_approx,
-        bool_or(kind = 'assignment') AS has_assignment, bool_or(kind = 'link') AS has_link,
+        bool_or(kind = 'assignment') AS has_assignment, bool_or(kind = 'link') AS has_link, bool_or(kind = 'travel_link') AS has_travel,
         bool_and(kind = 'new_version') AS is_version
       FROM raw GROUP BY group_key, client_id, root_id
     ), ordered_groups AS (
@@ -4531,7 +4531,7 @@ app.get('/api/clients/:id/routine-deliveries', { preHandler: requireStaff }, asy
       SELECT DISTINCT ON (group_key) * FROM raw ORDER BY group_key, sent_at DESC, id DESC
     )
     SELECT rep.id, rep.owner_id, rep.routine_id, rep.client_id,
-      CASE WHEN groups.has_assignment AND groups.has_link THEN 'assignment_link' ELSE rep.kind END AS kind,
+      CASE WHEN groups.has_assignment AND groups.has_travel THEN 'assignment_travel_link' WHEN groups.has_assignment AND groups.has_link THEN 'assignment_link' ELSE rep.kind END AS kind,
       COALESCE(groups.real_sent_at, rep.sent_at) AS sent_at, rep.sent_by_user_id, rep.due_on,
       rep.share_link_id, rep.offer_id, rep.assignment_id, rep.routine_title, rep.routine_version,
       rep.client_name, rep.summary_text, rep.exercises_snapshot, rep.summary_reconstructed,
@@ -4568,10 +4568,10 @@ app.post('/api/routine-deliveries/:id/retract', { preHandler: requireStaff }, as
       WHERE d.id = ${id} AND d.owner_id = ${auth.sub} FOR UPDATE OF d`;
     if (!delivery) return { code: 404 as const };
     // El historial junta en una sola fila la asignación y el enlace del mismo día y fecha límite: se quitan juntos.
-    const group = ['assignment', 'link'].includes(String(delivery.kind)) && !delivery.offer_id && delivery.client_id && delivery.root_id
+    const group = ['assignment', 'link', 'travel_link'].includes(String(delivery.kind)) && !delivery.offer_id && delivery.client_id && delivery.root_id
       ? await transaction`
           SELECT d.* FROM routine_deliveries d JOIN routines r ON r.id = d.routine_id
-          WHERE d.owner_id = ${auth.sub} AND d.client_id = ${delivery.client_id} AND d.offer_id IS NULL AND d.kind IN ('assignment', 'link')
+          WHERE d.owner_id = ${auth.sub} AND d.client_id = ${delivery.client_id} AND d.offer_id IS NULL AND d.kind IN ('assignment', 'link', 'travel_link')
             AND COALESCE(r.root_routine_id, r.id) = ${delivery.root_id}
             AND (d.sent_at AT TIME ZONE 'America/Panama')::date = (${new Date(delivery.sent_at as string).toISOString()}::timestamptz AT TIME ZONE 'America/Panama')::date
             AND d.due_on IS NOT DISTINCT FROM ${delivery.due_on ?? null}::date

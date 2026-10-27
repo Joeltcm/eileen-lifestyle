@@ -66,3 +66,18 @@ test('RT4) un envío que no existe da 404 y se puede volver a enviar después de
   assert.equal((await api.patch(`/api/routines/${rutinaId}`, { title: 'Rutina de nuevo', description: 'x', sessionsPerWeek: 1, clientId: clienteId, exercises: [{ name: 'Sentadilla', sets: 3, reps: '10' }] })).estado, 200);
   assert.equal((await api.get(`/api/clients/${clienteId}/routine-deliveries`)).datos.length, 1, 'al reasignar ya no avisa de repetido');
 });
+
+test('RT5) la asignación y el enlace de viaje del mismo momento salen como UN envío, y se quitan juntos', async () => {
+  const { clienteId, rutinaId } = await nueva();
+  const hoy = new Date(Date.now() - 5 * 3600_000).toISOString().slice(0, 10);
+  const fin = new Date(Date.now() - 5 * 3600_000 + 9 * 86400_000).toISOString().slice(0, 10);
+  const viaje = await api.post(`/api/clients/${clienteId}/travel`, { startsOn: hoy, endsOn: fin });
+  assert.equal(viaje.estado, 201, JSON.stringify(viaje.datos));
+  const enlace = await api.post(`/api/routines/${rutinaId}/share-links`, { clientId: clienteId, travelId: viaje.datos.id, hours: 48 });
+  assert.equal(enlace.estado, 201, JSON.stringify(enlace.datos));
+  assert.equal((await db`SELECT 1 FROM routine_deliveries WHERE client_id = ${clienteId}`).length, 2, 'dos registros internos');
+  const lista = (await api.get(`/api/clients/${clienteId}/routine-deliveries`)).datos;
+  assert.equal(lista.length, 1, 'una sola fila en el expediente');
+  assert.equal(lista[0].kind, 'assignment_travel_link');
+  assert.equal((await api.post(`/api/routine-deliveries/${lista[0].id}/retract`, {})).datos.removed, 2);
+});

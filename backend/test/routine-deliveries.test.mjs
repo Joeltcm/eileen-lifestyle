@@ -89,7 +89,7 @@ test('las cinco vías de entrega registran instantáneas y el resumen no cambia 
   entregas = (await api.get(`/api/routines/${rutina.datos.id}/deliveries`)).datos;
   assert.equal(entregas.find(item => item.client_name === 'Cliente de envíos').summary_text, resumenOriginal, 'el primer resumen es una foto del envío');
   assert.ok(entregas.every(item => item.summary_text.includes('20 lb') && !item.summary_text.includes('35 lb')), 'los resúmenes no se recalculan con la edición');
-  assert.ok((await api.get(`/api/clients/${clienteB}/routine-deliveries`)).datos.length >= 3, 'asignación y enlace del mismo día forman una sola tarjeta; oferta y viaje permanecen separados');
+  assert.ok((await api.get(`/api/clients/${clienteB}/routine-deliveries`)).datos.length >= 2, 'asignación, enlace y enlace de viaje del mismo día forman una sola tarjeta; la oferta permanece aparte');
 });
 
 test('el expediente agrupa asignación y enlace del mismo día y atribuye la cumplida al grupo', async () => {
