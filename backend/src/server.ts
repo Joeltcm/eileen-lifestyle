@@ -4557,6 +4557,53 @@ app.get('/api/clients/:id/routine-deliveries', { preHandler: requireStaff }, asy
   `;
 });
 
+// Quitar un envío hecho por error: retira la asignación (y con ella el cargo al ciclo o al bono), revoca el enlace, retira la oferta pendiente y borra el envío del historial.
+// Si la clienta ya cumplió esa rutina no se toca: ahí hay un registro de entrenamiento real que no se puede deshacer.
+app.post('/api/routine-deliveries/:id/retract', { preHandler: requireStaff }, async (request, reply) => {
+  const auth = request.user as AuthUser;
+  const id = z.string().uuid().parse((request.params as { id: string }).id);
+  const result = await sql.begin(async transaction => {
+    const [delivery] = await transaction`
+      SELECT d.*, COALESCE(r.root_routine_id, r.id) AS root_id FROM routine_deliveries d LEFT JOIN routines r ON r.id = d.routine_id
+      WHERE d.id = ${id} AND d.owner_id = ${auth.sub} FOR UPDATE OF d`;
+    if (!delivery) return { code: 404 as const };
+    // El historial junta en una sola fila la asignación y el enlace del mismo día y fecha límite: se quitan juntos.
+    const group = ['assignment', 'link'].includes(String(delivery.kind)) && !delivery.offer_id && delivery.client_id && delivery.root_id
+      ? await transaction`
+          SELECT d.* FROM routine_deliveries d JOIN routines r ON r.id = d.routine_id
+          WHERE d.owner_id = ${auth.sub} AND d.client_id = ${delivery.client_id} AND d.offer_id IS NULL AND d.kind IN ('assignment', 'link')
+            AND COALESCE(r.root_routine_id, r.id) = ${delivery.root_id}
+            AND (d.sent_at AT TIME ZONE 'America/Panama')::date = (${new Date(delivery.sent_at as string).toISOString()}::timestamptz AT TIME ZONE 'America/Panama')::date
+            AND d.due_on IS NOT DISTINCT FROM ${delivery.due_on ?? null}::date
+          FOR UPDATE OF d`
+      : [delivery];
+    const ids = group.map(row => String(row.id));
+    const since = group.reduce((min, row) => Math.min(min, new Date(row.sent_at as string).getTime()), Date.now());
+    if (delivery.client_id && delivery.root_id) {
+      const [hecha] = await transaction`
+        SELECT 1 AS hecha FROM routine_completions rc
+        WHERE rc.client_id = ${delivery.client_id} AND rc.created_at >= ${new Date(since).toISOString()}::timestamptz
+          AND rc.routine_id IN (SELECT rr.id FROM routines rr WHERE COALESCE(rr.root_routine_id, rr.id) = ${delivery.root_id}) LIMIT 1`;
+      if (hecha) return { code: 409 as const };
+    }
+    for (const row of group) {
+      if (row.assignment_id) await transaction`DELETE FROM routine_assignments WHERE id = ${row.assignment_id} AND client_id = ${row.client_id}`;
+      else if (row.kind === 'assignment' && row.client_id && row.routine_id) await transaction`UPDATE routine_assignments SET active = false, ends_on = COALESCE(ends_on, (now() AT TIME ZONE 'America/Panama')::date) WHERE routine_id = ${row.routine_id} AND client_id = ${row.client_id} AND active = true`;
+      if (row.share_link_id) await transaction`UPDATE routine_share_links SET revoked_at = COALESCE(revoked_at, now()) WHERE id = ${row.share_link_id} AND owner_id = ${auth.sub}`;
+      if (row.offer_id) await transaction`UPDATE session_routine_offers SET status = 'withdrawn' WHERE id = ${row.offer_id} AND status = 'offered'`;
+    }
+    await transaction`DELETE FROM routine_deliveries WHERE id = ANY(${ids}::uuid[]) AND owner_id = ${auth.sub}`;
+    await transaction`
+      INSERT INTO audit_log (user_id, user_email, action, route, target_id, detail, ip)
+      VALUES (${auth.sub}, ${auth.email || null}, 'routine_delivery.retract', ${request.routeOptions?.url || request.url}, ${id},
+        ${transaction.json({ routine: delivery.routine_title, client: delivery.client_name, kinds: group.map(row => String(row.kind)), sentAt: new Date(delivery.sent_at as string).toISOString() })}, ${request.ip || null})`;
+    return { code: 200 as const, removed: ids.length, routineTitle: String(delivery.routine_title), clientName: String(delivery.client_name) };
+  });
+  if (result.code === 404) return reply.code(404).send({ error: 'Envío no encontrado' });
+  if (result.code === 409) return reply.code(409).send({ error: 'Esa rutina ya fue cumplida por el cliente: queda en su historial y no se puede quitar.' });
+  return { ok: true, removed: result.removed, routineTitle: result.routineTitle, clientName: result.clientName };
+});
+
 app.get('/api/routines/:id/recent-sends', { preHandler: requireStaff }, async (request, reply) => {
   const auth = request.user as AuthUser;
   const id = z.string().uuid().parse((request.params as { id: string }).id);

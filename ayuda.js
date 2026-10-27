@@ -74,6 +74,13 @@ const pwaGuide = {
 // Las correcciones pequeñas que nadie nota no necesitan entrada. Los nombres de pantallas y botones van entre «comillas angulares».
 const whatsNewReleases = [
   {
+    id: '2026-10-27-rutinas-en-el-expediente', version: 332, date: '27-10-2026', title: 'Rutinas desde el expediente del cliente',
+    items: [
+      { icon: '🏋️', title: 'Crea la rutina desde el expediente', text: 'En el expediente del cliente, en «Rutinas enviadas», hay un botón para crear su rutina. Sale ya con el cliente elegido y, al guardarla, vuelves a su expediente con la rutina anotada en la lista.' },
+      { icon: '↩️', title: 'Quita una rutina enviada por error', text: 'Cada envío de la lista tiene un botón «Quitar». Deja de estar asignada, el enlace deja de funcionar y sale del historial. Si el cliente ya la hizo no se puede quitar, porque ese entrenamiento queda registrado.' }
+    ]
+  },
+  {
     id: '2026-10-26-google-calendar-sin-duplicados', version: 331, date: '26-10-2026', title: 'Google Calendar sin clases repetidas',
     items: [
       { icon: '📅', title: 'Cada clase aparece una sola vez en tu Google Calendar', text: 'Arreglamos el motivo por el que una misma clase podía salir dos o más veces en tu calendario. Las repetidas que ya había se retiran solas la próxima vez que se sincronice (al abrir la app): se queda la buena y no se toca ningún evento tuyo que no venga de la app.' }
