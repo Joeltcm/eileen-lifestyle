@@ -83,13 +83,21 @@ export async function suggestRoutine(entrada: {
       + 'En un bloque se hacen sus ejercicios seguidos, en orden, y se repite el bloque "rounds" veces; por eso "sets" debe ser igual a "rounds" y "reps" es lo que se hace en cada ronda. '
       + 'Por omisión usa bloques de 3 ejercicios (2 a 4 si hace falta) y 3 rondas por bloque. Si la entrenadora indica otra estructura (por ejemplo "2 bloques de 4 ejercicios, 4 rondas cada uno"), respétala. '
       + 'Solo si la entrenadora pide expresamente ejercicios sueltos por series, omite "block" y "rounds".',
-    'Entre 4 y 10 ejercicios. "reps" es texto libre ("12", "30 seg", "10 por lado").',
+    'Entre 4 y 10 ejercicios (si la entrenadora fija el número de bloques, 3 a 5 ejercicios por bloque). "reps" es texto libre ("12", "30 seg", "10 por lado").',
     'El campo description resume el objetivo. Los campos warmup, cooldown y stretching son obligatorios: escribe instrucciones concretas, en español, con duración aproximada y sin dejarlos vacíos.',
     'warmup debe explicar cómo preparar el cuerpo; cooldown debe indicar cómo bajar la intensidad y respirar; stretching debe nombrar los estiramientos recomendados y cómo hacerlos sin dolor.',
     'La sección de ejercicios principales se mostrará con la lista de ejercicios, por lo que no la repitas dentro de description.',
     'El campo rationale explica en una o dos frases por qué elegiste ese enfoque, en español.'
   ];
 
+  const pedido = leerPeticion(entrada.descripcion);
+  if (pedido.bloques || pedido.rondas || pedido.porBloque || pedido.minutos) {
+    instrucciones.push(
+      'LA ENTRENADORA FIJÓ ESTA ESTRUCTURA (es obligatoria, sobre cualquier valor por omisión): '
+      + [pedido.bloques ? `EXACTAMENTE ${pedido.bloques} bloque${pedido.bloques === 1 ? '' : 's'} (no más, no menos)` : '', pedido.porBloque ? `${pedido.porBloque} ejercicios por bloque` : '', pedido.rondas ? `${pedido.rondas} rondas por bloque` : '',
+        pedido.minutos ? `duración total de ${pedido.minutos} minutos incluyendo ~${MINUTOS_FIJOS} de calentamiento, vuelta a la calma y estiramientos; elige ejercicios y repeticiones para que la parte principal dure unos ${Math.max(10, pedido.minutos - MINUTOS_FIJOS)} minutos (cada ronda de un ejercicio de ~12 repeticiones toma ~45 segundos con la transición, y entre rondas se descansa ~1 minuto)` : ''].filter(Boolean).join('; ') + '.'
+    );
+  }
   if (entrada.paraCliente) {
     instrucciones.push(
       'Esta rutina la hará el cliente POR SU CUENTA, sin entrenadora al lado, en lugar de su clase cancelada. '
@@ -193,6 +201,8 @@ export async function suggestRoutine(entrada: {
 
   if (!ejercicios.length) throw new Error('La propuesta no incluyó ningún ejercicio del catálogo. Prueba a describirla de otra forma.');
   normalizarBloques(ejercicios);
+  const peticion = leerPeticion(entrada.descripcion);
+  const ajuste = aplicarPeticion(ejercicios, peticion);
 
   const semanales = Number(cruda.sessionsPerWeek);
   return {
@@ -200,7 +210,8 @@ export async function suggestRoutine(entrada: {
     description: formatRoutineDescription({ objective: cruda.description, warmup: cruda.warmup, cooldown: cruda.cooldown, stretching: cruda.stretching }),
     sessionsPerWeek: Number.isFinite(semanales) && semanales >= 1 && semanales <= 7 ? Math.round(semanales) : 3,
     exercises: ejercicios,
-    rationale: String(cruda.rationale ?? '').trim().slice(0, 500),
+    rationale: [String(cruda.rationale ?? '').trim().slice(0, 500), ...ajuste.notas, `Duración estimada: unos ${ajuste.minutos} minutos en total (calentamiento, parte principal, vuelta a la calma y estiramientos)${ajuste.bloques ? `, en ${ajuste.bloques} bloque${ajuste.bloques === 1 ? '' : 's'}` : ''}.`].filter(Boolean).join(' '),
+    estimatedMinutes: ajuste.minutos,
     avoided: evitar.map(s => SECCIONES[s] || s),
     descartados
   };
@@ -221,4 +232,113 @@ export function normalizarBloques(ejercicios: Array<{ sets?: number; block?: num
     if (!rondas.has(nuevo)) rondas.set(nuevo, item.rounds ?? 3);
     item.block = nuevo; item.rounds = rondas.get(nuevo); item.sets = item.rounds;
   }
+}
+
+
+// ── Lo que pide la entrenadora, leído por el código ──────────────────────────────────────────
+// El modelo tiende a repetir su estructura por omisión (3 bloques de 3) y no sabe cuánto dura un circuito. Lo que ella ESCRIBE de forma explícita (bloques, rondas, ejercicios por bloque,
+// minutos) se lee aquí y se hace cumplir sobre la respuesta; el modelo solo propone los ejercicios.
+export type PeticionEstructura = { bloques?: number; rondas?: number; porBloque?: number; minutos?: number };
+const NUMEROS: Record<string, number> = { un: 1, uno: 1, una: 1, dos: 2, tres: 3, cuatro: 4, cinco: 5, seis: 6 };
+const numeroDe = (texto: string) => /^\d+$/.test(texto) ? Number(texto) : NUMEROS[texto.toLowerCase()];
+const CIFRA = '(\\d+|un|uno|una|dos|tres|cuatro|cinco|seis)';
+
+export function leerPeticion(texto: string): PeticionEstructura {
+  const t = String(texto || '').toLowerCase();
+  const salida: PeticionEstructura = {};
+  const bloques = t.match(new RegExp(`\\b${CIFRA}\\s+(?:bloques?|circuitos?)\\b`));
+  if (bloques) { const n = numeroDe(bloques[1]); if (n >= 1 && n <= 6) salida.bloques = n; }
+  const rondas = t.match(new RegExp(`\\b${CIFRA}\\s+(?:rondas?|vueltas?)\\b`));
+  if (rondas) { const n = numeroDe(rondas[1]); if (n >= 1 && n <= 10) salida.rondas = n; }
+  const porBloque = t.match(new RegExp(`\\b(?:de|con|por bloque)\\s+${CIFRA}\\s+ejercicios?\\b`));
+  if (porBloque) { const n = numeroDe(porBloque[1]); if (n >= 2 && n <= 8) salida.porBloque = n; }
+  let minutos: number | undefined;
+  const min = t.match(/\b(\d{2,3})\s*(?:min\b|mins\b|minutos?\b|')/);
+  if (min) minutos = Number(min[1]);
+  else if (/\bhora y media\b/.test(t)) minutos = 90;
+  else if (/\bmedia hora\b/.test(t)) minutos = 30;
+  else { const h = t.match(/\b(\d(?:[.,]5)?|una|dos)\s*(?:h\b|horas?\b)/); if (h) minutos = Math.round((numeroDe(h[1]) ?? Number(h[1].replace(',', '.'))) * 60); }
+  if (minutos && minutos >= 15 && minutos <= 120) salida.minutos = minutos;
+  return salida;
+}
+
+// Segundos que lleva UNA serie (o una pasada por el ejercicio en un circuito): lo que dice "reps" ("12", "30 seg", "1 min", "10 por lado").
+export function segundosDeEjercicio(reps: unknown) {
+  const texto = String(reps ?? '').toLowerCase();
+  const tiempo = texto.match(/(\d+(?:[.,]\d+)?)\s*(min|minutos?|seg|segundos?|s)\b/);
+  const lados = /por (?:lado|pierna|brazo)|c\/lado|cada (?:lado|pierna|brazo)/.test(texto) ? 2 : 1;
+  if (tiempo) { const n = Number(tiempo[1].replace(',', '.')); return Math.round((tiempo[2].startsWith('m') ? n * 60 : n) * lados); }
+  const rep = texto.match(/(\d+)(?:\s*[-–]\s*(\d+))?/);
+  const n = rep ? (rep[2] ? (Number(rep[1]) + Number(rep[2])) / 2 : Number(rep[1])) : 12;
+  return Math.round(n * 3.5 * lados);   // ~3,5 s por repetición, con la bajada controlada
+}
+
+type EjercicioEstimable = { reps?: string; sets?: number; block?: number; rounds?: number };
+const TRANSICION = 15;          // cambiar de ejercicio: cambiar de lugar, tomar la mancuerna
+const DESCANSO_RONDA = 60;      // entre rondas de un circuito
+const DESCANSO_BLOQUE = 90;     // cambio de bloque: preparar otro equipo
+const DESCANSO_SERIE = 50;      // entre series de un ejercicio suelto
+export const MINUTOS_FIJOS = 18; // calentamiento (5–10) + vuelta a la calma (3–5) + estiramientos (5–8), a media
+
+// Minutos de la parte principal. Un bloque dura sus rondas × (todos sus ejercicios con su transición) + los descansos entre rondas; los ejercicios sueltos, sus series con descanso.
+export function minutosPrincipales(ejercicios: EjercicioEstimable[]) {
+  let segundos = 0;
+  const bloques = new Map<number, EjercicioEstimable[]>();
+  for (const e of ejercicios) {
+    if (e.block) bloques.set(e.block, [...(bloques.get(e.block) ?? []), e]);
+    else { const series = e.sets || 3; segundos += series * (segundosDeEjercicio(e.reps) + TRANSICION) + (series - 1) * DESCANSO_SERIE; }
+  }
+  let primero = true;
+  for (const lista of bloques.values()) {
+    const rondas = lista[0].rounds || 3;
+    if (!primero) segundos += DESCANSO_BLOQUE; primero = false;
+    segundos += rondas * lista.reduce((suma, e) => suma + segundosDeEjercicio(e.reps) + TRANSICION, 0) + (rondas - 1) * DESCANSO_RONDA;
+  }
+  return segundos / 60;
+}
+export const minutosTotales = (ejercicios: EjercicioEstimable[]) => Math.round(minutosPrincipales(ejercicios) + MINUTOS_FIJOS);
+
+// Reparte los ejercicios, en su orden, en `cuantos` bloques lo más parejos posible (los primeros reciben el sobrante).
+function repartirEnBloques(ejercicios: EjercicioEstimable[], cuantos: number) {
+  const base = Math.floor(ejercicios.length / cuantos); const extra = ejercicios.length % cuantos; let i = 0;
+  for (let b = 1; b <= cuantos; b += 1) { const tam = base + (b <= extra ? 1 : 0); for (let k = 0; k < tam; k += 1) ejercicios[i++].block = b; }
+}
+
+// Hace cumplir lo que ella pidió. Devuelve lo que decidió, para explicárselo.
+export function aplicarPeticion(ejercicios: EjercicioEstimable[], peticion: PeticionEstructura) {
+  const notas: string[] = [];
+  let rondasFijas = peticion.rondas;
+  // Estructura: número de bloques o tamaño de bloque pedidos.
+  if (peticion.bloques || peticion.porBloque) {
+    const cuantos = peticion.bloques ?? Math.max(1, Math.round(ejercicios.length / peticion.porBloque!));
+    const maximo = cuantos * (peticion.porBloque ?? 5);
+    if (ejercicios.length > maximo) ejercicios.splice(maximo);
+    const efectivos = Math.min(cuantos, Math.max(1, Math.floor(ejercicios.length / 2)));
+    repartirEnBloques(ejercicios, efectivos);
+    if (efectivos < cuantos) notas.push(`Pediste ${cuantos} bloques pero solo hubo ejercicios para ${efectivos}.`);
+    const rondas = ejercicios.find(e => e.rounds)?.rounds ?? 3;
+    ejercicios.forEach(e => { e.rounds = rondas; e.sets = rondas; });
+  }
+  const bloquesFinales = new Set(ejercicios.map(e => e.block).filter(Boolean)).size;
+  const fijarRondas = (n: number) => ejercicios.forEach(e => { if (e.block) { e.rounds = n; e.sets = n; } else e.sets = n; });
+  if (rondasFijas && bloquesFinales) fijarRondas(rondasFijas);
+  // Duración: se busca el número de rondas (o series) que más se acerque al tiempo pedido; si ni con 2 alcanza, se quita el último ejercicio de los bloques más largos.
+  if (peticion.minutos) {
+    const objetivo = Math.max(10, peticion.minutos - MINUTOS_FIJOS);
+    const mejorRonda = () => {
+      let mejor = 2; let distancia = Infinity;
+      for (let n = 2; n <= 5; n += 1) { fijarRondas(n); const d = Math.abs(minutosPrincipales(ejercicios) - objetivo); if (d < distancia) { distancia = d; mejor = n; } }
+      return mejor;
+    };
+    const minimo = () => { const porBloque = new Map<number, number>(); ejercicios.forEach(e => porBloque.set(e.block ?? 0, (porBloque.get(e.block ?? 0) ?? 0) + 1)); return porBloque; };
+    if (!rondasFijas) fijarRondas(mejorRonda());
+    let seguridad = 12;
+    while (minutosPrincipales(ejercicios) > objetivo * 1.15 && seguridad-- > 0) {
+      const conteo = minimo(); const candidato = [...ejercicios].reverse().find(e => (conteo.get(e.block ?? 0) ?? 0) > (e.block ? 2 : 1) && ejercicios.length > 3);
+      if (!candidato) break;
+      ejercicios.splice(ejercicios.indexOf(candidato), 1);
+      if (!rondasFijas) fijarRondas(mejorRonda());
+    }
+  }
+  return { notas, minutos: minutosTotales(ejercicios), bloques: new Set(ejercicios.map(e => e.block).filter(Boolean)).size };
 }

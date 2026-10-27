@@ -74,6 +74,13 @@ const pwaGuide = {
 // Las correcciones pequeñas que nadie nota no necesitan entrada. Los nombres de pantallas y botones van entre «comillas angulares».
 const whatsNewReleases = [
   {
+    id: '2026-10-27-rutinas-ia-bloques-y-tiempo', version: 334, date: '27-10-2026', title: 'Rutinas con IA: los bloques y el tiempo que pides',
+    items: [
+      { icon: '🧩', title: 'Si pides 2 bloques, salen 2 bloques', text: 'Al proponer una rutina con IA, lo que escribes se respeta: "2 bloques", "4 rondas", "bloques de 4 ejercicios". Antes casi siempre salían 3 bloques; ahora la app lo reordena a lo que pediste.' },
+      { icon: '⏱️', title: 'El tiempo ahora se calcula de verdad', text: 'Si escribes "45 minutos", la app ajusta las rondas y los ejercicios para que la rutina dure eso, contando calentamiento, descansos, vuelta a la calma y estiramientos. En la nota de la propuesta verás la duración estimada.' }
+    ]
+  },
+  {
     id: '2026-10-27-rutinas-en-el-expediente', version: 332, date: '27-10-2026', title: 'Rutinas desde el expediente del cliente',
     items: [
       { icon: '🏋️', title: 'Crea la rutina desde el expediente', text: 'En el expediente del cliente, en «Rutinas enviadas», hay un botón para crear su rutina. Sale ya con el cliente elegido y, al guardarla, vuelves a su expediente con la rutina anotada en la lista.' },

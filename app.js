@@ -1,4 +1,4 @@
-const APP_VERSION = '333';
+const APP_VERSION = '334';
 const markPwaVersion = () => document.querySelectorAll('.topbar-actions').forEach(actions => {
   if (actions.querySelector('[data-pwa-version]')) return;
   const indicator = document.createElement('span');
