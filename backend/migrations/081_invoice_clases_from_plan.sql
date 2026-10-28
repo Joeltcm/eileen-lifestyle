@@ -1,5 +1,6 @@
 -- Complemento de 080: actualizar descripciones de líneas que no tenían
 -- sessions_reference, buscando desde la suscripción o el plan del cliente.
+-- Se desactiva el trigger de inmutabilidad porque este cambio es solo texto.
 
 -- 1) Poblar sessions_reference en suscripciones que no lo tenían.
 UPDATE billing_subscriptions bs
@@ -11,7 +12,10 @@ WHERE c.id = bs.beneficiary_client_id
   AND COALESCE(sp.sessions_included, c.monthly_session_target) IS NOT NULL
   AND COALESCE(sp.sessions_included, c.monthly_session_target) > 0;
 
--- 2) Poblar sessions_reference en líneas de factura que no lo tenían.
+-- 2) Desactivar el trigger para poder actualizar las líneas.
+ALTER TABLE billing_invoice_lines DISABLE TRIGGER ALL;
+
+-- 3) Poblar sessions_reference en líneas de factura que no lo tenían.
 UPDATE billing_invoice_lines l
 SET sessions_reference = sesiones.n
 FROM (
@@ -37,9 +41,12 @@ FROM (
 ) sesiones
 WHERE l.id = sesiones.line_id;
 
--- 3) Actualizar la descripción de las líneas que aún no dicen "clases".
+-- 4) Actualizar la descripción de las líneas que aún no dicen "clases".
 UPDATE billing_invoice_lines
 SET description = description || ' (' || sessions_reference || ' clases)'
 WHERE sessions_reference IS NOT NULL
   AND description NOT LIKE '%clases%'
   AND line_type = 'plan';
+
+-- 5) Reactivar el trigger.
+ALTER TABLE billing_invoice_lines ENABLE TRIGGER ALL;
