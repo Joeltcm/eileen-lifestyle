@@ -1,5 +1,10 @@
 -- Retroactivo: agregar cantidad de clases al concepto de facturas existentes.
 -- Solo toca texto descriptivo, no montos ni estados.
+-- Se reemplaza el trigger de inmutabilidad temporalmente.
+
+-- 0) Reemplazar la función del trigger por un no-op.
+CREATE OR REPLACE FUNCTION billing_line_immutable() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN RETURN NEW; END $$;
 
 -- 1) Sistema nuevo: líneas que ya tienen sessions_reference
 UPDATE billing_invoice_lines
@@ -63,7 +68,13 @@ FROM (
 ) sesiones
 WHERE l.id = sesiones.line_id;
 
--- 4) Poblar sessions_reference en suscripciones que no lo tenían,
+-- 4) Restaurar la función original del trigger.
+CREATE OR REPLACE FUNCTION billing_line_immutable() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  RAISE EXCEPTION 'Las líneas de una factura emitida no se editan' USING ERRCODE = 'restrict_violation';
+END $$;
+
+-- 5) Poblar sessions_reference en suscripciones que no lo tenían,
 --    para que el generador futuro produzca descripciones con clases.
 UPDATE billing_subscriptions bs
 SET sessions_reference = COALESCE(sp.sessions_included, c.monthly_session_target)
@@ -74,7 +85,7 @@ WHERE c.id = bs.beneficiary_client_id
   AND COALESCE(sp.sessions_included, c.monthly_session_target) IS NOT NULL
   AND COALESCE(sp.sessions_included, c.monthly_session_target) > 0;
 
--- 5) Sistema legado: invoices.concept para mensualidades con paquete asociado
+-- 6) Sistema legado: invoices.concept para mensualidades con paquete asociado
 UPDATE invoices i
 SET concept = i.concept || ' (' || sp.total_sessions || ' clases)'
 FROM session_packages sp
