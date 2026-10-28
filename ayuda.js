@@ -74,6 +74,13 @@ const pwaGuide = {
 // Las correcciones pequeñas que nadie nota no necesitan entrada. Los nombres de pantallas y botones van entre «comillas angulares».
 const whatsNewReleases = [
   {
+    id: '2026-10-28-alertas-de-ritmo', version: 335, date: '28-10-2026', title: 'Seguimiento de ritmo de rutinas',
+    items: [
+      { icon: '📊', title: 'Aviso cuando un cliente se atrasa', text: 'Si un cliente con plan de rutinas no completa su rutina en el plazo esperado (por ejemplo, 4 dias para un plan de 8 al mes), recibes una notificacion push para que le des seguimiento. El aviso se reinicia cada vez que el cliente completa una rutina.' },
+      { icon: '✈️', title: 'Aviso de rutina de viaje sin completar', text: 'Cuando envias una rutina de viaje y el cliente no la completa en 3 dias, recibes un aviso para que no se pierda ese entrenamiento.' }
+    ]
+  },
+  {
     id: '2026-10-27-rutinas-ia-bloques-y-tiempo', version: 334, date: '27-10-2026', title: 'Rutinas con IA: los bloques y el tiempo que pides',
     items: [
       { icon: '🧩', title: 'Si pides 2 bloques, salen 2 bloques', text: 'Al proponer una rutina con IA, lo que escribes se respeta: "2 bloques", "4 rondas", "bloques de 4 ejercicios". Antes casi siempre salían 3 bloques; ahora la app lo reordena a lo que pediste.' },
