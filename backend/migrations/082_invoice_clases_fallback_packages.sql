@@ -1,10 +1,13 @@
 -- Complemento de 081: para clientes sin sessions_included ni monthly_session_target,
 -- buscar el total_sessions del session_package más reciente (kind = 'monthly').
--- Se desactiva el trigger de inmutabilidad porque este cambio es solo texto.
+-- Se reemplaza el trigger de inmutabilidad temporalmente porque DISABLE TRIGGER
+-- no funciona correctamente dentro de unsafe() de postgres.js.
 
-ALTER TABLE billing_invoice_lines DISABLE TRIGGER ALL;
+-- 1) Reemplazar la función del trigger por un no-op.
+CREATE OR REPLACE FUNCTION billing_line_immutable() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN RETURN NEW; END $$;
 
--- 1) Poblar sessions_reference en suscripciones desde session_packages.
+-- 2) Poblar sessions_reference en suscripciones desde session_packages.
 UPDATE billing_subscriptions bs
 SET sessions_reference = paq.total_sessions
 FROM (
@@ -18,7 +21,7 @@ WHERE paq.client_id = bs.beneficiary_client_id
   AND bs.sessions_reference IS NULL
   AND paq.total_sessions > 0;
 
--- 2) Poblar sessions_reference en líneas de factura desde session_packages.
+-- 3) Poblar sessions_reference en líneas de factura desde session_packages.
 UPDATE billing_invoice_lines l
 SET sessions_reference = paq.total_sessions
 FROM billing_invoices i,
@@ -35,11 +38,15 @@ WHERE i.id = l.invoice_id
   AND l.sessions_reference IS NULL
   AND l.line_type = 'plan';
 
--- 3) Actualizar la descripción de las líneas que ahora tienen sessions_reference.
+-- 4) Actualizar la descripción de las líneas que ahora tienen sessions_reference.
 UPDATE billing_invoice_lines
 SET description = description || ' (' || sessions_reference || ' clases)'
 WHERE sessions_reference IS NOT NULL
   AND description NOT LIKE '%clases%'
   AND line_type = 'plan';
 
-ALTER TABLE billing_invoice_lines ENABLE TRIGGER ALL;
+-- 5) Restaurar la función original del trigger.
+CREATE OR REPLACE FUNCTION billing_line_immutable() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  RAISE EXCEPTION 'Las líneas de una factura emitida no se editan' USING ERRCODE = 'restrict_violation';
+END $$;

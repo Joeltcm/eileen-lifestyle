@@ -1,6 +1,6 @@
 -- Complemento de 080: actualizar descripciones de líneas que no tenían
 -- sessions_reference, buscando desde la suscripción o el plan del cliente.
--- Se desactiva el trigger de inmutabilidad porque este cambio es solo texto.
+-- Se reemplaza el trigger de inmutabilidad temporalmente.
 
 -- 1) Poblar sessions_reference en suscripciones que no lo tenían.
 UPDATE billing_subscriptions bs
@@ -12,8 +12,9 @@ WHERE c.id = bs.beneficiary_client_id
   AND COALESCE(sp.sessions_included, c.monthly_session_target) IS NOT NULL
   AND COALESCE(sp.sessions_included, c.monthly_session_target) > 0;
 
--- 2) Desactivar el trigger para poder actualizar las líneas.
-ALTER TABLE billing_invoice_lines DISABLE TRIGGER ALL;
+-- 2) Reemplazar la función del trigger por un no-op.
+CREATE OR REPLACE FUNCTION billing_line_immutable() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN RETURN NEW; END $$;
 
 -- 3) Poblar sessions_reference en líneas de factura que no lo tenían.
 UPDATE billing_invoice_lines l
@@ -48,5 +49,8 @@ WHERE sessions_reference IS NOT NULL
   AND description NOT LIKE '%clases%'
   AND line_type = 'plan';
 
--- 5) Reactivar el trigger.
-ALTER TABLE billing_invoice_lines ENABLE TRIGGER ALL;
+-- 5) Restaurar la función original del trigger.
+CREATE OR REPLACE FUNCTION billing_line_immutable() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  RAISE EXCEPTION 'Las líneas de una factura emitida no se editan' USING ERRCODE = 'restrict_violation';
+END $$;
