@@ -11061,6 +11061,135 @@ reminderInterval.unref();
 firstBillingRun.unref();
 billingInterval.unref();
 
+// ---------------------------------------------------------------------------
+// Alertas de ritmo de rutinas
+// ---------------------------------------------------------------------------
+async function checkRoutinePaceAlerts() {
+  if (!webPushReady) return;
+  const hoy = diaEnPanama(new Date());
+
+  // --- 1. Clientes con plan de rutinas atrasados ---
+  const atrasados = await sql`
+    WITH activos AS (
+      SELECT c.id AS client_id, c.full_name, c.owner_id, c.billing_cutoff_day,
+             sp.routines_per_month
+      FROM clients c
+      JOIN service_plans sp ON sp.id = c.plan_id
+      WHERE sp.service_type = 'rutinas'
+        AND sp.routines_per_month IS NOT NULL AND sp.routines_per_month > 0
+        AND c.status = 'active' AND c.service_mode <> 'demo'
+    ),
+    periodo AS (
+      SELECT a.*,
+        CASE
+          WHEN EXTRACT(DAY FROM (now() AT TIME ZONE 'America/Panama')) >= a.billing_cutoff_day
+          THEN make_date(
+            EXTRACT(YEAR FROM now() AT TIME ZONE 'America/Panama')::int,
+            EXTRACT(MONTH FROM now() AT TIME ZONE 'America/Panama')::int,
+            LEAST(a.billing_cutoff_day, (DATE_TRUNC('month', now() AT TIME ZONE 'America/Panama') + INTERVAL '1 month' - INTERVAL '1 day')::date - DATE_TRUNC('month', now() AT TIME ZONE 'America/Panama')::date + 1)::int
+          )
+          ELSE make_date(
+            EXTRACT(YEAR FROM (now() AT TIME ZONE 'America/Panama') - INTERVAL '1 month')::int,
+            EXTRACT(MONTH FROM (now() AT TIME ZONE 'America/Panama') - INTERVAL '1 month')::int,
+            LEAST(a.billing_cutoff_day, (DATE_TRUNC('month', (now() AT TIME ZONE 'America/Panama') - INTERVAL '1 month') + INTERVAL '1 month' - INTERVAL '1 day')::date - DATE_TRUNC('month', (now() AT TIME ZONE 'America/Panama') - INTERVAL '1 month')::date + 1)::int
+          )
+        END AS periodo_inicio,
+        CASE
+          WHEN EXTRACT(DAY FROM (now() AT TIME ZONE 'America/Panama')) >= a.billing_cutoff_day
+          THEN make_date(
+            EXTRACT(YEAR FROM (now() AT TIME ZONE 'America/Panama') + INTERVAL '1 month')::int,
+            EXTRACT(MONTH FROM (now() AT TIME ZONE 'America/Panama') + INTERVAL '1 month')::int,
+            LEAST(a.billing_cutoff_day, (DATE_TRUNC('month', (now() AT TIME ZONE 'America/Panama') + INTERVAL '1 month') + INTERVAL '1 month' - INTERVAL '1 day')::date - DATE_TRUNC('month', (now() AT TIME ZONE 'America/Panama') + INTERVAL '1 month')::date + 1)::int
+          )
+          ELSE make_date(
+            EXTRACT(YEAR FROM now() AT TIME ZONE 'America/Panama')::int,
+            EXTRACT(MONTH FROM now() AT TIME ZONE 'America/Panama')::int,
+            LEAST(a.billing_cutoff_day, (DATE_TRUNC('month', now() AT TIME ZONE 'America/Panama') + INTERVAL '1 month' - INTERVAL '1 day')::date - DATE_TRUNC('month', now() AT TIME ZONE 'America/Panama')::date + 1)::int
+          )
+        END AS periodo_fin
+      FROM activos a
+    ),
+    conteo AS (
+      SELECT p.*,
+        COUNT(rc.id)::int AS hechas,
+        MAX(rc.completed_on) AS ultima
+      FROM periodo p
+      LEFT JOIN routine_completions rc
+        ON rc.client_id = p.client_id
+        AND rc.completed_on >= p.periodo_inicio
+        AND rc.completed_on < p.periodo_fin
+      GROUP BY p.client_id, p.full_name, p.owner_id, p.billing_cutoff_day,
+               p.routines_per_month, p.periodo_inicio, p.periodo_fin
+    )
+    SELECT c.*,
+      (c.periodo_fin - c.periodo_inicio) AS dias_periodo,
+      COALESCE(c.ultima, c.periodo_inicio) AS fecha_ref,
+      (${hoy}::date - COALESCE(c.ultima, c.periodo_inicio)) AS dias_desde
+    FROM conteo c
+    WHERE c.hechas < c.routines_per_month
+      AND (${hoy}::date - COALESCE(c.ultima, c.periodo_inicio))
+          > CEIL((c.periodo_fin - c.periodo_inicio)::numeric / c.routines_per_month)
+      AND NOT EXISTS (
+        SELECT 1 FROM notification_deliveries nd
+        WHERE nd.user_id = c.owner_id AND nd.kind = 'routine_pace'
+          AND nd.reference_id = (
+            SELECT CAST(
+              substring(h,1,8)||'-'||substring(h,9,4)||'-'||substring(h,13,4)||'-'||substring(h,17,4)||'-'||substring(h,21,12)
+              AS uuid)
+            FROM (SELECT md5('routine-pace:' || c.client_id || ':' || COALESCE(c.ultima, c.periodo_inicio)::text) AS h) x
+          )
+      )`;
+
+  for (const row of atrasados) {
+    const enviada = await sendPushToUser(String(row.owner_id), {
+      title: `${row.full_name} va atrasado/a en rutinas`,
+      body: `Lleva ${row.hechas} de ${row.routines_per_month} este ciclo. Última hace ${row.dias_desde} días.`,
+      url: new URL('/#clients', config.APP_URL).toString()
+    });
+    const refHash = createHash('md5').update(`routine-pace:${row.client_id}:${row.fecha_ref}`).digest('hex');
+    const refUuid = `${refHash.slice(0, 8)}-${refHash.slice(8, 12)}-${refHash.slice(12, 16)}-${refHash.slice(16, 20)}-${refHash.slice(20, 32)}`;
+    await sql`INSERT INTO notification_deliveries (user_id, kind, reference_id)
+      VALUES (${row.owner_id}, 'routine_pace', ${refUuid}::uuid)
+      ON CONFLICT DO NOTHING`;
+  }
+
+  // --- 2. Rutinas de viaje sin completar (3+ días) ---
+  const viajesPendientes = await sql`
+    SELECT rd.id AS delivery_id, rd.owner_id, rd.client_id, rd.routine_id,
+           rd.client_name, rd.routine_title, rd.sent_at,
+           (${hoy}::date - (rd.sent_at AT TIME ZONE 'America/Panama')::date) AS dias_desde
+    FROM routine_deliveries rd
+    WHERE rd.kind = 'travel_link'
+      AND (${hoy}::date - (rd.sent_at AT TIME ZONE 'America/Panama')::date) >= 3
+      AND NOT EXISTS (
+        SELECT 1 FROM routine_completions rc
+        WHERE rc.routine_id = rd.routine_id AND rc.client_id = rd.client_id
+          AND rc.completed_on >= (rd.sent_at AT TIME ZONE 'America/Panama')::date
+      )
+      AND NOT EXISTS (
+        SELECT 1 FROM notification_deliveries nd
+        WHERE nd.user_id = rd.owner_id AND nd.kind = 'travel_overdue'
+          AND nd.reference_id = rd.id::text
+      )`;
+
+  for (const row of viajesPendientes) {
+    const enviada = await sendPushToUser(String(row.owner_id), {
+      title: 'Rutina de viaje sin completar',
+      body: `${row.client_name} no ha completado "${row.routine_title}" enviada hace ${row.dias_desde} días.`,
+      url: new URL('/#clients', config.APP_URL).toString()
+    });
+    if (enviada) {
+      await sql`INSERT INTO notification_deliveries (user_id, kind, reference_id)
+        VALUES (${row.owner_id}, 'travel_overdue', ${String(row.delivery_id)})
+        ON CONFLICT DO NOTHING`;
+    }
+  }
+}
+const primeraAlertaRitmo = setTimeout(() => checkRoutinePaceAlerts().catch(error => app.log.error(error, 'checkRoutinePaceAlerts falló')), 35_000);
+const alertaRitmoInterval = setInterval(() => checkRoutinePaceAlerts().catch(error => app.log.error(error, 'checkRoutinePaceAlerts falló')), 12 * 60 * 60_000);
+primeraAlertaRitmo.unref();
+alertaRitmoInterval.unref();
+
 app.addHook('onClose', async () => {
   clearTimeout(firstReminderRun);
   clearInterval(reminderInterval);
@@ -11068,6 +11197,8 @@ app.addHook('onClose', async () => {
   clearInterval(billingInterval);
   clearTimeout(firstNewBillingRun);
   clearInterval(newBillingInterval);
+  clearTimeout(primeraAlertaRitmo);
+  clearInterval(alertaRitmoInterval);
   await sql.end();
 });
 await app.listen({ port: config.PORT, host: '::' });
