@@ -64,8 +64,8 @@ test('WN3) en pantalla sale UNA vez con las novedades, se marca como vista, no r
     await esperar(() => p.q('#modal-content .news-release'), { ms: 20000, mensaje: 'aviso de novedades' });
     const texto = p.q('#modal-content').textContent;
     assert.match(texto, /Lo nuevo en tu app/); assert.match(texto, /Dar acceso al portal, listo en un toque/); assert.match(texto, /Guía para instalar la app en el teléfono/); assert.match(texto, /Tu firma en los contratos/);
-    assert.equal(p.qa('#modal-content .news-item').length, 15, 'las entregas en el mismo aviso');
-    assert.equal(p.qa('#modal-content .news-release').length, 6); assert.match(texto, /Cada clase aparece una sola vez/); assert.match(texto, /Cotizaciones para tus clientes/); assert.match(texto, /Aviso de cumpleaños de tus clientes/);
+    assert.equal(p.qa('#modal-content .news-item').length, 16, 'las entregas en el mismo aviso');
+    assert.equal(p.qa('#modal-content .news-release').length, 7); assert.match(texto, /Cada clase aparece una sola vez/); assert.match(texto, /Cotizaciones para tus clientes/); assert.match(texto, /Aviso de cumpleaños de tus clientes/);
     assert.ok(texto.indexOf('Tu firma en los contratos') < texto.indexOf('Cotizaciones para tus clientes'), 'lo más nuevo primero');
     await esperar(async () => (await api.get('/api/whats-new')).datos.seen === p.evaluar('whatsNewReleases[0].id'), { mensaje: 'marcada como vista' });
     // un botón de la novedad lleva a donde dice

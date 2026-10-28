@@ -524,7 +524,7 @@ async function generateRecurringInvoices(ownerId?: string) {
         c.id AS billed_for_client_id, c.full_name AS billed_for_name,
         (c.billing_responsible_client_id IS NOT NULL) AS la_paga_otro,
         c.owner_id, CASE WHEN c.payment_mode = 'no_anticipado' THEN 0 ELSE c.standard_price END AS amount,
-        COALESCE(p.name, 'Mensualidad') AS plan_name, periods.billing_period,
+        COALESCE(p.name, 'Mensualidad') || CASE WHEN COALESCE(p.sessions_included, 0) > 0 THEN ' (' || p.sessions_included || ' clases)' ELSE '' END AS plan_name, periods.billing_period,
         make_date(
           extract(year FROM periods.billing_period)::integer,
           extract(month FROM periods.billing_period)::integer,
@@ -957,7 +957,7 @@ app.post('/api/billing/invoices', { preHandler: requireStaff }, async (request, 
     if (line.lineType !== 'ajuste' && amount < 0) return null;
     return {
       beneficiaryClientId: line.beneficiaryClientId, planId: line.planId ?? null, lineType: line.lineType,
-      description: line.description ?? (line.lineType === 'ajuste' ? 'Ajuste' : 'Plan'),
+      description: line.description ?? (line.lineType === 'ajuste' ? 'Ajuste' : (line.sessionsReference ? `Plan (${line.sessionsReference} clases)` : 'Plan')),
       quantity: line.quantity, unitAmount: line.unitAmount, amount, sessionsReference: line.sessionsReference ?? null
     };
   });
@@ -1067,9 +1067,11 @@ app.post('/api/billing/invoices/:id/redistribute', { preHandler: requireStaff },
         RETURNING id, number`;
       for (const line of input.lines) {
         const previous = oldLines.find(item => item.beneficiary === line.beneficiaryClientId);
+        const baseDesc = old.kind === 'paquete' ? 'Paquete' : 'Mensualidad';
+        const lineDesc = previous?.description ?? (previous?.sessions_reference ? `${baseDesc} (${previous.sessions_reference} clases)` : baseDesc);
         await transaction`
           INSERT INTO billing_invoice_lines (invoice_id, beneficiary_client_id, plan_id, line_type, description, quantity, unit_amount, amount, sessions_reference)
-          VALUES (${created.id}, ${line.beneficiaryClientId}, ${previous?.plan_id ?? null}, 'plan', ${previous?.description ?? (old.kind === 'paquete' ? 'Paquete' : 'Mensualidad')}, 1, ${line.amount}, ${line.amount}, ${previous?.sessions_reference ?? null})`;
+          VALUES (${created.id}, ${line.beneficiaryClientId}, ${previous?.plan_id ?? null}, 'plan', ${lineDesc}, 1, ${line.amount}, ${line.amount}, ${previous?.sessions_reference ?? null})`;
       }
       const byPayment = new Map<string, { amount: number; appliedOn: string }>();
       for (const application of applications) {
@@ -3713,7 +3715,9 @@ app.post('/api/packages', { preHandler: requireStaff }, async (request, reply) =
   if (client.service_mode === 'demo') return reply.code(409).send({ error: 'Los clientes demo no admiten saldos ni paquetes de sesiones.' });
 
   const esCobroMensual = input.kind === 'monthly';
-  const concepto = esCobroMensual ? 'Mensualidad' : 'Paquete de sesiones';
+  const concepto = esCobroMensual
+    ? (input.totalSessions ? `Mensualidad (${input.totalSessions} clases)` : 'Mensualidad')
+    : `Paquete de ${input.totalSessions} sesiones`;
   // Una mensualidad vence en el próximo corte del cliente: es lo que delimita
   // el período que acaba de pagar. Sin vencimiento, sus sesiones no caducarían
   // nunca y se acumularían mes tras mes.

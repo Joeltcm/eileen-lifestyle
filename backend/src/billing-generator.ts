@@ -193,8 +193,10 @@ export async function planBillingGeneration(tx: Tx, ownerId: string, today = fec
           invoiceLines.push({ subscriptionId: line.id, beneficiaryId: line.beneficiaryId, beneficiaryName: line.beneficiaryName, description: 'Sesiones a crédito',
             quantity, unitAmount: line.price, amount: fromCents(quantity * cents(line.price)), sessionsReference: quantity || null });
         } else {
+          const base = kind === 'paquete' ? 'Paquete' : 'Mensualidad';
+          const desc = line.sessionsReference ? `${base} (${line.sessionsReference} clases)` : base;
           invoiceLines.push({ subscriptionId: line.id, beneficiaryId: line.beneficiaryId, beneficiaryName: line.beneficiaryName,
-            description: kind === 'paquete' ? 'Paquete' : 'Mensualidad', quantity: 1, unitAmount: line.price, amount: line.price, sessionsReference: line.sessionsReference });
+            description: desc, quantity: 1, unitAmount: line.price, amount: line.price, sessionsReference: line.sessionsReference });
         }
       }
       const total = fromCents(invoiceLines.reduce((sum, line) => sum + cents(line.amount), 0));

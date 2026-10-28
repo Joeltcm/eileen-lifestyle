@@ -74,6 +74,12 @@ const pwaGuide = {
 // Las correcciones pequeñas que nadie nota no necesitan entrada. Los nombres de pantallas y botones van entre «comillas angulares».
 const whatsNewReleases = [
   {
+    id: '2026-10-28-detalle-clases-en-factura', version: 336, date: '28-10-2026', title: 'Cantidad de clases en las facturas',
+    items: [
+      { icon: '🧾', title: 'El concepto detalla las clases incluidas', text: 'Las facturas nuevas muestran la cantidad de clases en el concepto, por ejemplo "Mensualidad (8 clases)" en lugar de solo "Mensualidad". Asi el cliente entiende mejor lo que esta pagando.' }
+    ]
+  },
+  {
     id: '2026-10-28-alertas-de-ritmo', version: 335, date: '28-10-2026', title: 'Seguimiento de ritmo de rutinas',
     items: [
       { icon: '📊', title: 'Aviso cuando un cliente se atrasa', text: 'Si un cliente con plan de rutinas no completa su rutina en el plazo esperado (por ejemplo, 4 dias para un plan de 8 al mes), recibes una notificacion push para que le des seguimiento. El aviso se reinicia cada vez que el cliente completa una rutina.' },
