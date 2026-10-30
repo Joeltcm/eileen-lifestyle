@@ -4254,7 +4254,7 @@ async function routineAssignmentDates(transaction: TransactionSql, ownerId: stri
   }, start);
   if (dueOn && dueOn < start) throw new Error('La fecha límite no puede ser anterior al inicio de la rutina.');
   const dueOnAdjusted = Boolean(dueOn && dueOn > cycle.cycleEnd);
-  return { startsOn: start, dueOn: dueOnAdjusted ? cycle.cycleEnd : (dueOn || cycle.cycleEnd), dueOnAdjusted, cycle };
+  return { startsOn: start, dueOn: dueOn || cycle.cycleEnd, dueOnAdjusted, cycle };
 }
 
 /**
