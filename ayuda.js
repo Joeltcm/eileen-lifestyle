@@ -74,6 +74,13 @@ const pwaGuide = {
 // Las correcciones pequeñas que nadie nota no necesitan entrada. Los nombres de pantallas y botones van entre «comillas angulares».
 const whatsNewReleases = [
   {
+    id: '2026-10-29-rutinas-fecha-flexible', version: 337, date: '29-10-2026', title: 'Rutinas con fecha límite flexible',
+    items: [
+      { icon: '📅', title: 'Agenda rutinas más allá del ciclo actual', text: 'Ahora puedes poner una fecha límite que caiga fuera del ciclo de facturación en curso. Antes se recortaba al cierre del ciclo; ahora se respeta la fecha que elijas.' },
+      { icon: '💬', title: 'El mensaje de WhatsApp muestra la fecha límite', text: 'Al compartir una rutina, el texto de WhatsApp ahora incluye hasta cuándo tiene el cliente para completarla, además de cuándo vence el enlace.' }
+    ]
+  },
+  {
     id: '2026-10-28-detalle-clases-en-factura', version: 336, date: '28-10-2026', title: 'Cantidad de clases en las facturas',
     items: [
       { icon: '🧾', title: 'El concepto detalla las clases incluidas', text: 'Las facturas nuevas muestran la cantidad de clases en el concepto, por ejemplo "Mensualidad (8 clases)" en lugar de solo "Mensualidad". Asi el cliente entiende mejor lo que esta pagando.' }
