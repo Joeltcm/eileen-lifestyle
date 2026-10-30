@@ -10656,7 +10656,7 @@ app.post('/api/routines/:id/share-links', { preHandler: requireStaff }, async (r
     if (error instanceof RoutineRepeatError) return reply.code(409).send({ code: error.code, message: error.message, repeats: error.repeats });
     throw error;
   }
-  return reply.code(201).send({ id: enlace.id, url: new URL(`/#rutina=${token}`, config.APP_URL).toString(), expiresAt: enlace.expires_at, routineTitle: rutina.title });
+  return reply.code(201).send({ id: enlace.id, url: new URL(`/#rutina=${token}`, config.APP_URL).toString(), expiresAt: enlace.expires_at, routineTitle: rutina.title, dueOn: rutina.due_on ?? null });
 });
 app.get('/api/clients/:id/share-links', { preHandler: requireStaff }, async (request, reply) => {
   const auth = request.user as AuthUser;

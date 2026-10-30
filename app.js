@@ -3771,7 +3771,7 @@ function newRoutine(routine = null, duplicate = false, propuesta = null) {
       }
       if (!guardada) { event.target.classList.remove('loading-state'); return; }
       if (guardada.assignment_due_on_adjusted && guardada.assignment_cycle?.cycleEnd) {
-        toast(`La fecha límite se ajustó al cierre del ciclo: ${fechaCorta(guardada.assignment_cycle.cycleEnd)}.`);
+        toast(`La fecha límite está fuera del ciclo actual (cierra el ${fechaCorta(guardada.assignment_cycle.cycleEnd)}).`);
       }
       if (propuesta?.enlaceViajeId) {
         if (assigned !== propuesta.clientId) throw new Error('La rutina de viaje debe quedar asignada al mismo cliente.');
@@ -5391,7 +5391,7 @@ function enviarEnlaceRutina(rutina, client, viaje = null) {
       evento.target.classList.add('loading-state');
       const enlace = await apiConAvisoDeRepetido(`/api/routines/${rutina.id}/share-links`, { method: 'POST', body: cuerpo });
       if (!enlace) { evento.target.classList.remove('loading-state'); return; }
-      const mensaje = `Hola ${nombre}, te dejé tu rutina${viaje ? ' para el viaje' : ''}: ${enlace.url}\n\nÁbrela, mira los videos y confirma al terminar${viaje ? ' (confírmala el día de tu clase para que cuente)' : ''}. El enlace vale hasta el ${venceTexto(enlace.expiresAt)}`;
+      const mensaje = `Hola ${nombre}, te dejé tu rutina${viaje ? ' para el viaje' : ''}: ${enlace.url}\n\nÁbrela, mira los videos y confirma al terminar${viaje ? ' (confírmala el día de tu clase para que cuente)' : ''}. ${enlace.dueOn ? `Tienes hasta el ${fechaCorta(enlace.dueOn)} para cumplirla. ` : ''}El enlace vale hasta el ${venceTexto(enlace.expiresAt)}`;
       box.innerHTML = `<p class="eyebrow">RUTINA POR ENLACE</p><h2>Enlace listo</h2>
         <p class="form-summary">Vale hasta el <b>${venceTexto(enlace.expiresAt)}</b> (hora de Panamá).</p>
         <label>Enlace<input id="enlace-url" readonly value="${escapeHtml(enlace.url)}" /></label>
