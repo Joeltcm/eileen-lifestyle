@@ -14,7 +14,7 @@ import { registerZohoRoutes } from './zoho-routes.js';
 import { cancelSessionInGoogle, registerGoogleCalendarRoutes, removeSessionFromGoogle, syncSessionToGoogle } from './google-calendar.js';
 import { moveSessionInTransaction } from './session-reschedule.js';
 import { complianceCompletionExpression, complianceSessionCondition } from './compliance.js';
-import { routineSuggestionsReady, suggestRoutine } from './routine-suggestions.js';
+import { routineSuggestionsReady, suggestRoutine, modifyRoutine } from './routine-suggestions.js';
 import { normalizeRegisteredVideo } from './video-upload-normalizer.js';
 import { accountStatementPdf, accountsReceivablePdf, billingInvoicePdf, compliancePdf, contractPdf, invoicePdf, monthlyFinancePdf, routineComplianceAllPdf, routineCompliancePdf } from './billing-reports.js';
 import { routineComplianceAll, routineComplianceSeries } from './routine-compliance-report.js';
@@ -4632,7 +4632,13 @@ const routineSuggestionSchema = z.object({
   repeatMuscleGroups: z.boolean().default(false),
   forClient: z.boolean().default(false),
   forTravel: z.boolean().default(false),
-  durationMinutes: z.coerce.number().int().min(15).max(180).optional()
+  durationMinutes: z.coerce.number().int().min(15).max(180).optional(),
+  existingExercises: z.array(z.object({
+    name: z.string(), sets: z.coerce.number().optional(),
+    reps: z.string().optional(), notes: z.string().optional(),
+    block: z.coerce.number().optional(), rounds: z.coerce.number().optional()
+  })).optional(),
+  existingTitle: z.string().max(120).optional()
 });
 
 // Los pesos que este cliente ya manejó, por ejercicio. Salen de sus rutinas
@@ -4718,9 +4724,20 @@ app.post('/api/routines/suggest', { preHandler: requireStaff }, async (request, 
   }
 
   try {
+    const catalogoMapeado = catalogo.map(e => ({ name: String(e.name), section: String(e.section), level: e.level as string, machine: e.machine as string, freeWeight: e.free_weight as string }));
+    if (input.existingExercises?.length) {
+      const propuesta = await modifyRoutine({
+        ejerciciosActuales: input.existingExercises as Array<{ name: string; sets?: number; reps?: string; notes?: string; block?: number; rounds?: number }>,
+        tituloActual: input.existingTitle || 'Rutina',
+        instruccion: input.description,
+        catalogo: catalogoMapeado,
+        condiciones
+      });
+      return propuesta;
+    }
     const propuesta = await suggestRoutine({
       descripcion: input.description,
-      catalogo: catalogo.map(e => ({ name: String(e.name), section: String(e.section), level: e.level as string, machine: e.machine as string, freeWeight: e.free_weight as string })),
+      catalogo: catalogoMapeado,
       historial, condiciones,
       repetirGrupos: input.repeatMuscleGroups,
       clienteNombre,
@@ -4731,6 +4748,47 @@ app.post('/api/routines/suggest', { preHandler: requireStaff }, async (request, 
     return propuesta;
   } catch (error) {
     app.log.warn({ err: error, ownerId: auth.sub }, 'No se pudo proponer una rutina');
+    return reply.code(502).send({ error: (error as Error).message });
+  }
+});
+
+const routineModifySchema = z.object({ instruction: z.string().trim().min(5).max(600) });
+
+app.post('/api/routines/:id/modify', { preHandler: requireStaff }, async (request, reply) => {
+  const auth = request.user as AuthUser;
+  if (!routineSuggestionsReady) return reply.code(503).send({ error: 'La propuesta con IA todavía no está configurada' });
+  const id = z.string().uuid().parse((request.params as { id: string }).id);
+  const input = routineModifySchema.parse(request.body);
+
+  const [rutina] = await sql`SELECT id, title, description, exercises FROM routines WHERE id = ${id} AND owner_id = ${auth.sub} AND NOT archived`;
+  if (!rutina) return reply.code(404).send({ error: 'Rutina no encontrada' });
+
+  const catalogo = await sql`SELECT name, section, level, machine, free_weight FROM exercises WHERE owner_id = ${auth.sub} AND NOT archived ORDER BY section, name`;
+  if (!catalogo.length) return reply.code(409).send({ error: 'No hay ejercicios en el catálogo' });
+
+  const ejerciciosActuales = Array.isArray(rutina.exercises) ? rutina.exercises as Array<{ name: string; sets?: number; reps?: string; notes?: string; block?: number; rounds?: number }> : [];
+
+  // Condiciones del cliente asignado, si lo hay.
+  let condiciones: string[] = [];
+  const [asignacion] = await sql`SELECT client_id FROM routine_assignments WHERE routine_id = ${id} AND active = true LIMIT 1`;
+  if (asignacion) {
+    const lesiones = await sql`SELECT title, body_area, severity FROM client_conditions WHERE client_id = ${asignacion.client_id} AND status IN ('active', 'monitoring')`;
+    const gravedad: Record<string, string> = { mild: 'leve', moderate: 'moderada', severe: 'grave' };
+    condiciones = lesiones.map(fila => `${fila.title}${fila.body_area ? ` en ${fila.body_area}` : ''} (${gravedad[String(fila.severity)] || fila.severity})`);
+  }
+
+  try {
+    const propuesta = await modifyRoutine({
+      ejerciciosActuales,
+      tituloActual: String(rutina.title),
+      descripcionActual: rutina.description ? String(rutina.description) : undefined,
+      instruccion: input.instruction,
+      catalogo: catalogo.map(e => ({ name: String(e.name), section: String(e.section), level: e.level as string, machine: e.machine as string, freeWeight: e.free_weight as string })),
+      condiciones
+    });
+    return propuesta;
+  } catch (error) {
+    app.log.warn({ err: error, ownerId: auth.sub }, 'No se pudo modificar la rutina con IA');
     return reply.code(502).send({ error: (error as Error).message });
   }
 });

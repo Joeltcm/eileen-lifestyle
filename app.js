@@ -3492,6 +3492,69 @@ function newRoutine(routine = null, duplicate = false, propuesta = null) {
       } catch (error) { toast(error.message, true); boton.disabled = false; boton.textContent = 'Proponer'; }
     });
   };
+  let intentosModificacion = 0;
+  const MAX_INTENTOS_MODIFICACION = 10;
+  const botonModificar = document.getElementById('routine-modify-ai');
+  const actualizarBotonModificar = () => { if (botonModificar) botonModificar.hidden = selectedExercises.length === 0; };
+  botonModificar.onclick = () => {
+    if (intentosModificacion >= MAX_INTENTOS_MODIFICACION) { toast('Alcanzaste el límite de 10 modificaciones con IA', true); return; }
+    const caja = document.createElement('div');
+    caja.innerHTML = `<p class="eyebrow">ENTRENAMIENTO</p><h2>Modificar con IA</h2>
+      <p style="color:#6f7b75;margin-top:-12px">Describe qué quieres cambiar. La rutina actual se enviará a la IA, que devolverá la versión modificada para que la revises.</p>
+      <form id="modificar-ia-form">
+        <label>¿Qué quieres cambiar?<textarea name="instruction" rows="3" required minlength="5" maxlength="600" placeholder="Ej. Reemplaza la sentadilla por peso muerto. Agrega 10 min de calentamiento con bandas."></textarea></label>
+        <p class="section-note">Intento ${intentosModificacion + 1} de ${MAX_INTENTOS_MODIFICACION}</p>
+        <button class="primary wide-button">Aplicar cambios</button>
+      </form>`;
+    openModal(caja, true);
+    document.getElementById('modificar-ia-form').addEventListener('submit', async evento => {
+      evento.preventDefault();
+      const instruccion = new FormData(evento.target).get('instruction');
+      const boton = evento.target.querySelector('button');
+      boton.disabled = true; boton.textContent = 'Pensando…';
+      try {
+        let generada;
+        if (editing && routine?.id) {
+          generada = await api(`/api/routines/${encodeURIComponent(routine.id)}/modify`, { method: 'POST', body: { instruction: instruccion } });
+        } else {
+          generada = await api('/api/routines/suggest', { method: 'POST', body: {
+            description: instruccion,
+            clientId: clientSelect.value || undefined,
+            existingExercises: selectedExercises.map(e => ({ name: e.name, sets: e.sets, reps: e.reps, notes: e.notes, block: e.block, rounds: e.rounds })),
+            existingTitle: formularioRutina.querySelector('[name="title"]').value || undefined
+          } });
+        }
+        intentosModificacion++;
+        modal.close();
+        selectedExercises.splice(0, selectedExercises.length);
+        for (const sugerido of generada.exercises) {
+          const enCatalogo = exerciseCatalog.find(item => item.name.toLowerCase() === sugerido.name.toLowerCase());
+          selectedExercises.push({
+            block: sugerido.block, rounds: sugerido.rounds,
+            catalogId: enCatalogo?.id, name: sugerido.name, english: enCatalogo?.english || '',
+            category: enCatalogo ? exerciseSectionLabels[enCatalogo.section] : 'Propuesto',
+            level: enCatalogo?.level || '', machine: enCatalogo?.machine || '',
+            sets: sugerido.sets || 3, reps: sugerido.reps || '12', notes: sugerido.notes || ''
+          });
+        }
+        renderSelected();
+        if (generada.title) formularioRutina.querySelector('[name="title"]').value = generada.title;
+        if (generada.description) formularioRutina.querySelector('[name="description"]').value = generada.description;
+        if (generada.sessionsPerWeek) formularioRutina.querySelector('[name="sessions"]').value = generada.sessionsPerWeek;
+        const avisos = [];
+        if (generada.rationale) avisos.push(generada.rationale);
+        if (generada.descartados?.length) avisos.push(`Se descartaron por no estar en tu catálogo: ${generada.descartados.join(', ')}.`);
+        avisos.push(`Intento ${intentosModificacion} de ${MAX_INTENTOS_MODIFICACION}. Revísala antes de guardar.`);
+        formularioRutina.querySelectorAll('.aviso-ambito').forEach(n => n.remove());
+        const nota = document.createElement('p');
+        nota.className = 'section-note aviso-ambito';
+        nota.textContent = avisos.join(' ');
+        formularioRutina.prepend(nota);
+        if (intentosModificacion >= MAX_INTENTOS_MODIFICACION) { botonModificar.disabled = true; botonModificar.textContent = '✦ Límite alcanzado'; }
+        toast('Modificación lista · revísala antes de guardar');
+      } catch (error) { toast(error.message, true); boton.disabled = false; boton.textContent = 'Aplicar cambios'; }
+    });
+  };
   // Se aplica al final del montaje, cuando renderSelected y la lista ya existen.
   const aplicarPropuesta = () => {
     selectedExercises.splice(0, selectedExercises.length);
@@ -3555,6 +3618,7 @@ function newRoutine(routine = null, duplicate = false, propuesta = null) {
     }
     selectedList.replaceChildren();
     exerciseCount.textContent = `${selectedExercises.length} ejercicio${selectedExercises.length !== 1 ? 's' : ''}`;
+    actualizarBotonModificar();
     if (!selectedExercises.length) {
       const empty = document.createElement('p'); empty.className = 'empty'; empty.textContent = 'Todavía no has agregado ejercicios. Usa el selector superior para construir la rutina.'; selectedList.append(empty); return;
     }

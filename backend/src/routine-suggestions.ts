@@ -342,3 +342,122 @@ export function aplicarPeticion(ejercicios: EjercicioEstimable[], peticion: Peti
   }
   return { notas, minutos: minutosTotales(ejercicios), bloques: new Set(ejercicios.map(e => e.block).filter(Boolean)).size };
 }
+
+// ── Modificar una rutina existente con IA ──────────────────────────────────────
+export async function modifyRoutine(entrada: {
+  ejerciciosActuales: Array<{ name: string; sets?: number; reps?: string; notes?: string; block?: number; rounds?: number }>;
+  tituloActual: string;
+  descripcionActual?: string;
+  instruccion: string;
+  catalogo: CatalogEntry[];
+  condiciones: string[];
+}) {
+  if (!routineSuggestionsReady) throw new Error('Falta configurar la clave de DeepSeek');
+
+  const catalogoTexto = entrada.catalogo
+    .map(e => {
+      const libre = e.freeWeight && !/^no aplica/i.test(e.freeWeight) ? `peso libre: ${e.freeWeight}` : '';
+      const maquina = e.machine && !/^no aplica/i.test(e.machine) ? `máquina: ${e.machine}` : '';
+      return `- ${e.name} [${SECCIONES[e.section] || e.section}] (${[maquina, libre].filter(Boolean).join('; ') || 'peso corporal'})`;
+    })
+    .join('\n');
+
+  const instrucciones = [
+    'Eres asistente de una entrenadora personal en Panamá. Te da una rutina YA ARMADA y te pide cambios específicos.',
+    'Devuelve la rutina COMPLETA con los cambios aplicados. Lo que la entrenadora NO mencione debe quedar IGUAL: mismos ejercicios, mismas series, repeticiones, notas, bloques y rondas.',
+    'Elige ejercicios ÚNICAMENTE de la lista del catálogo, copiando el nombre exacto. No inventes ejercicios.',
+    'Si la entrenadora pide reemplazar un ejercicio por nombre, búscalo en el catálogo y sustitúyelo. Si pide agregar ejercicios, agrégalos en la posición más lógica.',
+    'Responde sólo JSON válido con esta forma: {"title":string,"description":string,"warmup":string,"cooldown":string,"stretching":string,"sessionsPerWeek":number,'
+      + '"exercises":[{"name":string,"sets":number,"reps":string,"notes":string,"block":number,"rounds":number}],"rationale":string}',
+    'ESTRUCTURA EN BLOQUES: cada ejercicio lleva "block" (número de bloque) y "rounds" (rondas del bloque). "sets" debe ser igual a "rounds". Mantén la estructura de bloques existente salvo que la entrenadora pida cambiarla.',
+    'El campo rationale explica en una o dos frases qué cambiaste y por qué, en español.',
+    'warmup, cooldown y stretching son obligatorios: si la rutina original los tiene, mantenlos salvo que el cambio los afecte.'
+  ];
+  if (entrada.condiciones.length) {
+    instrucciones.push(
+      `El cliente tiene estas lesiones o condiciones: ${entrada.condiciones.join('; ')}. `
+      + 'Evita los ejercicios que las agraven.'
+    );
+  }
+
+  const rutinaActualTexto = JSON.stringify({
+    title: entrada.tituloActual,
+    exercises: entrada.ejerciciosActuales.map(e => ({
+      name: e.name, sets: e.sets, reps: e.reps, notes: e.notes, block: e.block, rounds: e.rounds
+    }))
+  });
+
+  const respuesta = await fetch('https://api.deepseek.com/chat/completions', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${config.DEEPSEEK_API_KEY}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model: 'deepseek-chat',
+      temperature: 0.4,
+      response_format: { type: 'json_object' },
+      max_tokens: 2000,
+      messages: [
+        { role: 'system', content: instrucciones.join('\n') },
+        {
+          role: 'user',
+          content: [
+            'Rutina actual:',
+            rutinaActualTexto,
+            '',
+            `Cambios que pide la entrenadora: ${entrada.instruccion}`,
+            '',
+            'Catálogo disponible (usa estos nombres exactos):',
+            catalogoTexto
+          ].join('\n')
+        }
+      ]
+    }),
+    signal: AbortSignal.timeout(90000)
+  });
+
+  const payload = await respuesta.json().catch(() => ({}));
+  if (!respuesta.ok) throw apiError(payload, respuesta.status);
+
+  const eleccion = (payload as { choices?: Array<{ finish_reason?: string; message?: { content?: unknown } }> }).choices?.[0];
+  if (!eleccion?.message?.content && eleccion?.finish_reason === 'length') {
+    throw new Error('El modelo agotó el presupuesto de tokens antes de escribir la respuesta');
+  }
+  let cruda: Record<string, unknown>;
+  try { cruda = JSON.parse(String(eleccion?.message?.content ?? '')); }
+  catch { throw new Error('El modelo no devolvió una rutina legible'); }
+
+  const porNombre = new Map(entrada.catalogo.map(e => [e.name.toLowerCase(), e]));
+  const propuestos = Array.isArray(cruda.exercises) ? cruda.exercises : [];
+  const descartados: string[] = [];
+  const ejercicios = propuestos.flatMap((item: Record<string, unknown>) => {
+    const nombre = String(item?.name ?? '').trim();
+    const encontrado = porNombre.get(nombre.toLowerCase());
+    if (!encontrado) { if (nombre) descartados.push(nombre); return []; }
+    const series = Number(item?.sets);
+    const bloque = Number(item?.block); const rondas = Number(item?.rounds);
+    return [{
+      name: encontrado.name,
+      sets: Number.isFinite(series) && series >= 1 && series <= 20 ? Math.round(series) : 3,
+      reps: String(item?.reps ?? '').slice(0, 40) || '12',
+      notes: String(item?.notes ?? '').slice(0, 300) || undefined,
+      block: Number.isFinite(bloque) && bloque >= 1 && bloque <= 20 ? Math.round(bloque) : undefined,
+      rounds: Number.isFinite(rondas) && rondas >= 1 && rondas <= 10 ? Math.round(rondas) : undefined
+    }];
+  });
+
+  if (!ejercicios.length) throw new Error('La propuesta modificada no incluyó ningún ejercicio del catálogo. Prueba a describirlo de otra forma.');
+  normalizarBloques(ejercicios);
+  const peticion = leerPeticion(entrada.instruccion);
+  const ajuste = aplicarPeticion(ejercicios, peticion);
+
+  const semanales = Number(cruda.sessionsPerWeek);
+  return {
+    title: String(cruda.title ?? '').trim().slice(0, 120) || entrada.tituloActual,
+    description: formatRoutineDescription({ objective: cruda.description, warmup: cruda.warmup, cooldown: cruda.cooldown, stretching: cruda.stretching }),
+    sessionsPerWeek: Number.isFinite(semanales) && semanales >= 1 && semanales <= 7 ? Math.round(semanales) : 3,
+    exercises: ejercicios,
+    rationale: [String(cruda.rationale ?? '').trim().slice(0, 500), ...ajuste.notas, `Duración estimada: unos ${ajuste.minutos} minutos.`].filter(Boolean).join(' '),
+    estimatedMinutes: ajuste.minutos,
+    avoided: [] as string[],
+    descartados
+  };
+}

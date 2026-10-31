@@ -74,6 +74,12 @@ const pwaGuide = {
 // Las correcciones pequeñas que nadie nota no necesitan entrada. Los nombres de pantallas y botones van entre «comillas angulares».
 const whatsNewReleases = [
   {
+    id: '2026-10-30-modificar-rutina-con-ia', version: 339, date: '30-10-2026', title: 'Modificar rutina con IA',
+    items: [
+      { icon: '✦', title: 'Pide cambios a la IA sobre una rutina ya armada', text: 'Cuando una rutina generada con IA necesita ajustes, pulsa «Modificar con IA» y describe qué quieres cambiar: reemplazar un ejercicio, agregar calentamiento, cambiar la estructura, etc. La IA devuelve la rutina modificada para que la revises antes de guardar. Hasta 10 modificaciones por sesión.' }
+    ]
+  },
+  {
     id: '2026-10-30-rutinas-fecha-flexible', version: 338, date: '30-10-2026', title: 'Rutinas con fecha límite flexible',
     items: [
       { icon: '📅', title: 'Agenda rutinas más allá del ciclo actual', text: 'Ahora puedes poner una fecha límite que caiga fuera del ciclo de facturación en curso. Antes se recortaba al cierre del ciclo; ahora se respeta la fecha que elijas.' },
