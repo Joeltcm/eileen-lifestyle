@@ -10627,7 +10627,13 @@ app.post('/api/routines/:id/share-links', { preHandler: requireStaff }, async (r
   const [vence] = input.hours
     ? await sql`SELECT now() + (${input.hours}::int * interval '1 hour') AS expires_at`
     : await sql`SELECT ((${input.until!}::date + 1)::timestamp AT TIME ZONE 'America/Panama') AS expires_at`;
-  const expiresAt = new Date(vence.expires_at as string);
+  let expiresAt = new Date(vence.expires_at as string);
+  // Si la rutina tiene fecha límite posterior, extender el enlace hasta el fin de ese día.
+  if (rutina.due_on) {
+    const [dueEnd] = await sql`SELECT ((${rutina.due_on}::date + 1)::timestamp AT TIME ZONE 'America/Panama') AS t`;
+    const dueEndMs = new Date(dueEnd.t as string).getTime();
+    if (dueEndMs > expiresAt.getTime()) expiresAt = new Date(dueEndMs);
+  }
   if (expiresAt.getTime() < Date.now() + 3600_000) return reply.code(400).send({ error: 'La vigencia debe ser de al menos una hora.' });
   if (expiresAt.getTime() > Date.now() + 90 * 86400_000) return reply.code(400).send({ error: 'La vigencia no puede pasar de 90 días.' });
   const token = randomBytes(32).toString('base64url');

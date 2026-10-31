@@ -74,10 +74,11 @@ const pwaGuide = {
 // Las correcciones pequeñas que nadie nota no necesitan entrada. Los nombres de pantallas y botones van entre «comillas angulares».
 const whatsNewReleases = [
   {
-    id: '2026-10-29-rutinas-fecha-flexible', version: 337, date: '29-10-2026', title: 'Rutinas con fecha límite flexible',
+    id: '2026-10-30-rutinas-fecha-flexible', version: 338, date: '30-10-2026', title: 'Rutinas con fecha límite flexible',
     items: [
       { icon: '📅', title: 'Agenda rutinas más allá del ciclo actual', text: 'Ahora puedes poner una fecha límite que caiga fuera del ciclo de facturación en curso. Antes se recortaba al cierre del ciclo; ahora se respeta la fecha que elijas.' },
-      { icon: '💬', title: 'El mensaje de WhatsApp muestra la fecha límite', text: 'Al compartir una rutina, el texto de WhatsApp ahora incluye hasta cuándo tiene el cliente para completarla, además de cuándo vence el enlace.' }
+      { icon: '🔗', title: 'El enlace dura hasta la fecha límite', text: 'Si la rutina tiene fecha límite, el enlace que compartes dura al menos hasta ese día. Antes podía expirar antes de que el cliente pudiera completarla.' },
+      { icon: '💬', title: 'Mensaje de WhatsApp más claro', text: 'El texto de WhatsApp ahora solo muestra la fecha límite de la rutina, sin mencionar el vencimiento técnico del enlace.' }
     ]
   },
   {
