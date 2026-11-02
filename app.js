@@ -537,6 +537,7 @@ async function loadData() {
   data.routines = routines.map(item => ({ id: item.id, title: item.title, description: item.description || '', clients: (item.assigned_client_ids || []).length, assignedClientIds: item.assigned_client_ids || [], sessions: item.sessions_per_week, startsOn: item.starts_on || null, dueOn: item.due_on || null, exercises: item.exercises || [], version: Number(item.version || 1), rootRoutineId: item.root_routine_id || item.id, archivedAt: item.archived_at || null, deliveryCount: Number(item.deliveries_count || 0), deliveryClients: Number(item.delivery_clients_count || 0), lastSentAt: item.last_sent_at || null, lastCompletedAt: item.last_completed_at || null }));
   data.plans = plans.map(item => ({ id: item.id, name: item.name, description: item.description || '', billingModel: item.billing_model, serviceType: item.service_type || 'presencial', routinesPerMonth: item.routines_per_month == null ? null : Number(item.routines_per_month), price: Number(item.price), sessionsIncluded: Number(item.sessions_included || 0), validityDays: Number(item.validity_days || 0), zone: item.zone || '', specialFor: item.special_for || '', active: item.active }));
   data.compliance = compliance; data.demoSummary = demoSummary; data.contractSummary = contractSummary || { pending: 0, overdue: 0 }; data.notifications = notifications; data.googleCalendar = googleCalendar; billingAnalytics = null; billingAnalyticsLoadingYear = null; billingAnalyticsRequest += 1; showPendingBrowserNotification(notifications);
+  api('/api/account-settings/hero-photo').then(result => applyHeroPhoto(result.url)).catch(() => {});
 }
 const initials = name => name.split(' ').slice(0, 2).map(word => word[0]).join('').toUpperCase();
 const modalidadPlan = modelo => modelo === 'package' ? 'Paquete' : modelo === 'single' ? 'Sesión suelta' : 'Mensualidad';
@@ -754,6 +755,11 @@ async function loadBirthdays() {
   </div>`).join('');
   list.querySelectorAll('[data-prep-cliente]').forEach(boton => { boton.onclick = () => clientDetail(boton.dataset.prepCliente); });
   if (data.birthdays.length > 8) list.insertAdjacentHTML('beforeend', `<p class="birthday-more">y ${data.birthdays.length - 8} más en los próximos 30 días</p>`);
+}
+
+function applyHeroPhoto(url) {
+  const imgs = [document.getElementById('hero-photo-img'), document.getElementById('portal-hero-photo-img')];
+  imgs.forEach(img => { if (img) img.src = url; });
 }
 
 function renderDashboard() {
@@ -7572,6 +7578,7 @@ function renderPortal() {
 async function loadPortalData() {
   const [summary, notifications, routineOffers] = await Promise.all([api('/api/portal/summary'), api('/api/notifications'), api('/api/portal/routine-offers').catch(() => [])]);
   portalData = { ...summary, notifications, routineOffers };
+  if (portalData.heroPhotoUrl) applyHeroPhoto(portalData.heroPhotoUrl);
   // El expediente es la fuente de verdad del nombre. El usuario del portal
   // puede conservar un nombre antiguo, por eso se actualiza también el menú y
   // el avatar después de leer el expediente.
@@ -7755,17 +7762,39 @@ function accountMenu() {
   document.getElementById('account-logout').onclick = () => { modal.close(); logout(); };
 }
 async function accountDemoSettings() {
-  const box = document.createElement('div'); box.innerHTML = '<p class="eyebrow">AJUSTES DE LA CUENTA</p><h2>Ajustes de la cuenta</h2><form id="demo-settings-form"><label>WhatsApp de Eileen<input name="contactWhatsapp" inputmode="numeric" placeholder="Código de país + número" /></label><small>Solo dígitos con código de país. Déjalo vacío para ocultar “Hablar con Eileen”.</small><p class="eyebrow" style="margin-top:20px">DATOS PARA CONTRATOS</p><label>Nombre legal<input name="legalName" /></label><label>Identificación legal<input name="legalId" /></label><label>Domicilio legal<textarea name="legalAddress" rows="2"></textarea></label><label>Ciudad del contrato<input name="contractCity" /></label><small>Estos datos se guardan en Ajustes de la cuenta y no se incluyen en el código de la aplicación.</small><section class="signature-preview"><b>Firma de Eileen para contratos</b><div id="owner-signature-preview"><span class="signature-status">Sin firma guardada. Los contratos se pueden enviar y mostrarán el espacio pendiente.</span></div><button type="button" class="secondary wide-button" id="owner-signature-edit">Dibujar o subir firma</button></section><button class="primary wide-button">Guardar ajustes</button></form>';
+  const box = document.createElement('div'); box.innerHTML = '<p class=”eyebrow”>AJUSTES DE LA CUENTA</p><h2>Ajustes de la cuenta</h2><form id=”demo-settings-form”><label>WhatsApp de Eileen<input name=”contactWhatsapp” inputmode=”numeric” placeholder=”Código de país + número” /></label><small>Solo dígitos con código de país. Déjalo vacío para ocultar “Hablar con Eileen”.</small><p class=”eyebrow” style=”margin-top:20px”>DATOS PARA CONTRATOS</p><label>Nombre legal<input name=”legalName” /></label><label>Identificación legal<input name=”legalId” /></label><label>Domicilio legal<textarea name=”legalAddress” rows=”2”></textarea></label><label>Ciudad del contrato<input name=”contractCity” /></label><small>Estos datos se guardan en Ajustes de la cuenta y no se incluyen en el código de la aplicación.</small><section class=”signature-preview”><b>Firma de Eileen para contratos</b><div id=”owner-signature-preview”><span class=”signature-status”>Sin firma guardada. Los contratos se pueden enviar y mostrarán el espacio pendiente.</span></div><button type=”button” class=”secondary wide-button” id=”owner-signature-edit”>Dibujar o subir firma</button></section><section class=”signature-preview”><b>Foto de portada del sitio</b><small>Aparece en tu panel y en el portal de tus clientes.</small><div id=”hero-photo-preview”><span class=”signature-status”>Usando la foto predeterminada</span></div><label class=”secondary wide-button” style=”cursor:pointer;display:block;text-align:center;margin-top:8px”>Subir foto<input type=”file” id=”hero-photo-upload” accept=”image/jpeg,image/png,image/webp” style=”display:none” /></label><button type=”button” class=”secondary wide-button” id=”hero-photo-delete” hidden>Eliminar foto personalizada</button></section><button class=”primary wide-button”>Guardar ajustes</button></form>';
   openModal(box);
   try {
-    const settings = await api('/api/account-settings'); for (const [name, key] of [['contactWhatsapp', 'contact_whatsapp'], ['legalName', 'legal_name'], ['legalId', 'legal_id'], ['legalAddress', 'legal_address'], ['contractCity', 'contract_city']]) box.querySelector(`[name="${name}"]`).value = settings[key] || '';
-    if (settings.has_owner_signature) { const signature = await api('/api/account-settings/signature'); box.querySelector('#owner-signature-preview').innerHTML = `<img alt="Firma guardada de Eileen" src="${signature.imageData}" /><span class="signature-status">Firma privada guardada${settings.owner_signature_updated_at ? ` · ${fechaHoraPanama(settings.owner_signature_updated_at)}` : ''}</span>`; }
+    const settings = await api('/api/account-settings'); for (const [name, key] of [['contactWhatsapp', 'contact_whatsapp'], ['legalName', 'legal_name'], ['legalId', 'legal_id'], ['legalAddress', 'legal_address'], ['contractCity', 'contract_city']]) box.querySelector(`[name=”${name}”]`).value = settings[key] || '';
+    if (settings.has_owner_signature) { const signature = await api('/api/account-settings/signature'); box.querySelector('#owner-signature-preview').innerHTML = `<img alt=”Firma guardada de Eileen” src=”${signature.imageData}” /><span class=”signature-status”>Firma privada guardada${settings.owner_signature_updated_at ? ` · ${fechaHoraPanama(settings.owner_signature_updated_at)}` : ''}</span>`; }
+    if (settings.has_hero_photo) { const heroData = await api('/api/account-settings/hero-photo'); box.querySelector('#hero-photo-preview').innerHTML = `<img src=”${escapeHtml(heroData.url)}” alt=”Foto de portada actual” style=”max-height:120px;width:100%;border-radius:8px;object-fit:cover” /><span class=”signature-status”>Foto personalizada guardada</span>`; box.querySelector('#hero-photo-delete').hidden = false; }
   } catch (error) { if (error.status !== 404) toast(error.message, true); }
   box.querySelector('#owner-signature-edit').onclick = async () => {
-    const signature = await openSignatureCapture({ title: 'Firma de Eileen', allowUpload: true, previewName: box.querySelector('[name="legalName"]').value, previewLegalId: box.querySelector('[name="legalId"]').value }); if (!signature) return;
-    try { await api('/api/account-settings/signature', { method: 'POST', body: signature }); box.querySelector('#owner-signature-preview').innerHTML = `<img alt="Firma guardada de Eileen" src="${signature.imageData}" /><span class="signature-status">Firma privada guardada ahora</span>`; toast('Firma de Eileen guardada'); }
+    const signature = await openSignatureCapture({ title: 'Firma de Eileen', allowUpload: true, previewName: box.querySelector('[name=”legalName”]').value, previewLegalId: box.querySelector('[name=”legalId”]').value }); if (!signature) return;
+    try { await api('/api/account-settings/signature', { method: 'POST', body: signature }); box.querySelector('#owner-signature-preview').innerHTML = `<img alt=”Firma guardada de Eileen” src=”${signature.imageData}” /><span class=”signature-status”>Firma privada guardada ahora</span>`; toast('Firma de Eileen guardada'); }
     catch (error) { toast(error.message, true); }
   };
+  box.querySelector('#hero-photo-upload').addEventListener('change', event => {
+    const file = event.target.files?.[0]; if (!file) return;
+    const reader = new FileReader();
+    reader.onload = async () => {
+      try {
+        const result = await api('/api/account-settings/hero-photo', { method: 'POST', body: { imageData: reader.result } });
+        box.querySelector('#hero-photo-preview').innerHTML = `<img src=”${escapeHtml(result.url)}” alt=”Foto de portada actual” style=”max-height:120px;width:100%;border-radius:8px;object-fit:cover” /><span class=”signature-status”>Foto guardada</span>`;
+        box.querySelector('#hero-photo-delete').hidden = false;
+        applyHeroPhoto(result.url); toast('Foto de portada guardada');
+      } catch (error) { toast(error.message, true); }
+    };
+    reader.readAsDataURL(file);
+  });
+  box.querySelector('#hero-photo-delete').addEventListener('click', async () => {
+    try {
+      await api('/api/account-settings/hero-photo', { method: 'DELETE' });
+      box.querySelector('#hero-photo-preview').innerHTML = '<span class=”signature-status”>Usando la foto predeterminada</span>';
+      box.querySelector('#hero-photo-delete').hidden = true;
+      applyHeroPhoto('./assets/eleen-training.jpg'); toast('Foto de portada eliminada');
+    } catch (error) { toast(error.message, true); }
+  });
   box.querySelector('form').addEventListener('submit', async event => { event.preventDefault(); const values = new FormData(event.currentTarget); try { await api('/api/account-settings', { method: 'PATCH', body: { contactWhatsapp: values.get('contactWhatsapp'), legalName: values.get('legalName'), legalId: values.get('legalId'), legalAddress: values.get('legalAddress'), contractCity: values.get('contractCity') } }); modal.close(); toast('Ajustes de la cuenta guardados'); } catch (error) { toast(error.message, true); } });
 }
 document.getElementById('account-button').addEventListener('click', accountMenu);

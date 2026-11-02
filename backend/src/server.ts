@@ -2442,10 +2442,11 @@ app.get('/api/clients/:id/mode-events', { preHandler: requireStaff }, async (req
 app.get('/api/account-settings', { preHandler: requireStaff }, async request => {
   const auth = request.user as AuthUser;
   const [settings] = await sql`SELECT owner_id, contact_whatsapp, legal_name, legal_id, legal_address, contract_city,
-    (owner_signature_key IS NOT NULL) AS has_owner_signature, owner_signature_updated_at
+    (owner_signature_key IS NOT NULL) AS has_owner_signature, owner_signature_updated_at,
+    (hero_photo_key IS NOT NULL) AS has_hero_photo
     FROM account_settings WHERE owner_id = ${auth.sub}`;
   return settings || { owner_id: auth.sub, contact_whatsapp: null, legal_name: null, legal_id: null, legal_address: null, contract_city: null,
-    has_owner_signature: false, owner_signature_updated_at: null };
+    has_owner_signature: false, owner_signature_updated_at: null, has_hero_photo: false };
 });
 
 // ── Novedades de la aplicación ─────────────────────────────────────────────
@@ -2506,6 +2507,38 @@ app.post('/api/account-settings/signature', { preHandler: requireStaff }, async 
     owner_signature_updated_at = EXCLUDED.owner_signature_updated_at, updated_at = now()
     RETURNING owner_id, owner_signature_updated_at`;
   return { saved: true, owner_signature_updated_at: settings.owner_signature_updated_at };
+});
+
+// ── Foto de portada ────────────────────────────────────────────────────────
+app.get('/api/account-settings/hero-photo', { preHandler: requireStaff }, async (request, reply) => {
+  const auth = request.user as AuthUser;
+  const [settings] = await sql`SELECT hero_photo_key FROM account_settings WHERE owner_id = ${auth.sub}`;
+  if (!settings?.hero_photo_key) return reply.code(404).send({ error: 'No hay foto de portada guardada' });
+  const url = await createDownloadUrl(settings.hero_photo_key);
+  return { url };
+});
+
+app.post('/api/account-settings/hero-photo', { preHandler: requireStaff }, async (request, reply) => {
+  const auth = request.user as AuthUser;
+  const input = z.object({ imageData: z.string().max(4_000_000) }).parse(request.body);
+  const match = input.imageData.match(/^data:(image\/(?:jpeg|png|webp));base64,(.+)$/s);
+  if (!match) return reply.code(400).send({ error: 'Formato de imagen inválido. Usa JPEG, PNG o WebP.' });
+  const [, contentType, base64] = match;
+  const body = Buffer.from(base64, 'base64');
+  if (body.length > 3_000_000) return reply.code(400).send({ error: 'La imagen no puede superar 3 MB' });
+  const ext = contentType === 'image/jpeg' ? 'jpg' : contentType === 'image/png' ? 'png' : 'webp';
+  const objectKey = `hero-photos/${auth.sub}/${randomUUID()}.${ext}`;
+  await uploadObject(objectKey, contentType, body);
+  await sql`INSERT INTO account_settings (owner_id, hero_photo_key)
+    VALUES (${auth.sub}, ${objectKey}) ON CONFLICT (owner_id) DO UPDATE SET hero_photo_key = EXCLUDED.hero_photo_key, updated_at = now()`;
+  const url = await createDownloadUrl(objectKey);
+  return reply.code(201).send({ saved: true, url });
+});
+
+app.delete('/api/account-settings/hero-photo', { preHandler: requireStaff }, async (request, reply) => {
+  const auth = request.user as AuthUser;
+  await sql`UPDATE account_settings SET hero_photo_key = NULL, updated_at = now() WHERE owner_id = ${auth.sub}`;
+  return { deleted: true };
 });
 
 // ── Contratos internos generados desde el expediente ─────────────────────
@@ -9267,12 +9300,14 @@ app.get('/api/portal/summary', { preHandler: requireAuth }, async (request, repl
   const privateBusySlots = busySlots.map(slot => slot.is_mine
     ? { id: slot.id, starts_at: slot.starts_at, duration_minutes: slot.duration_minutes, is_mine: true }
     : { starts_at: slot.starts_at, duration_minutes: slot.duration_minutes, is_mine: false });
+  const [heroSettings] = await sql`SELECT hero_photo_key FROM account_settings WHERE owner_id = ${client.owner_id}`;
+  const heroPhotoUrl = heroSettings?.hero_photo_key ? await createDownloadUrl(heroSettings.hero_photo_key) : null;
   // Tras el corte (estado `new`) el portal lee la facturación nueva y ya no muestra saldos de clases (D-14).
   if (billingEngine.state === 'new') {
     const fromNew = await portalBillingFromNewSource(client.id as string, client.owner_id as string);
-    return { client: profile, travel: viajes, invoices: fromNew.invoices, billingNotice: fromNew.notice, routines: visibleRoutines, sessions, complianceSessions, busySlots: privateBusySlots, assessments, routineCompletions: completions, routineExerciseCompletions: exerciseCompletions, routineHistory, exercises, packages: [], credits: [], weightLogs, contracts };
+    return { client: profile, travel: viajes, invoices: fromNew.invoices, billingNotice: fromNew.notice, routines: visibleRoutines, sessions, complianceSessions, busySlots: privateBusySlots, assessments, routineCompletions: completions, routineExerciseCompletions: exerciseCompletions, routineHistory, exercises, packages: [], credits: [], weightLogs, contracts, heroPhotoUrl };
   }
-  return { client: profile, travel: viajes, invoices, billingNotice: null, routines: visibleRoutines, sessions, complianceSessions, busySlots: privateBusySlots, assessments, routineCompletions: completions, routineExerciseCompletions: exerciseCompletions, routineHistory, exercises, packages, credits, weightLogs, contracts };
+  return { client: profile, travel: viajes, invoices, billingNotice: null, routines: visibleRoutines, sessions, complianceSessions, busySlots: privateBusySlots, assessments, routineCompletions: completions, routineExerciseCompletions: exerciseCompletions, routineHistory, exercises, packages, credits, weightLogs, contracts, heroPhotoUrl };
 });
 
 const clientWeightLogSchema = z.object({
