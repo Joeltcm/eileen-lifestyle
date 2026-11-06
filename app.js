@@ -7922,7 +7922,13 @@ function renderDiagnostics() {
       try {
         const candidates = await api('/api/superadmin/billing-candidates');
         if (!candidates.length) { div.innerHTML = '<p class="empty">No hay candidatos pendientes.</p>'; return; }
-        div.innerHTML = `<table class="stack-mobile"><thead><tr><th>Cliente</th><th>Monto</th><th>Vencimiento</th><th>Período</th></tr></thead><tbody>${candidates.map(c => `<tr><td>${escapeHtml(c.billed_for_name)}</td><td>$${Number(c.amount).toFixed(2)}</td><td>${c.due_on}</td><td>${c.billing_period}</td></tr>`).join('')}</tbody></table>`;
+        const isNew = candidates[0]?.payerName !== undefined;
+        if (isNew) {
+          const statusLabel = { emitir: 'Emitir', programada: 'Programada', omitida: 'Omitida', sin_cargo: 'Sin cargo', sin_referencia: 'Sin referencia' };
+          div.innerHTML = `<table class="stack-mobile"><thead><tr><th>Pagador</th><th>Total</th><th>Ciclo</th><th>Estado</th></tr></thead><tbody>${candidates.map(c => `<tr><td>${escapeHtml(c.payerName)}</td><td>$${Number(c.total).toFixed(2)}</td><td>${billingDateText(c.cycleStart)}</td><td>${statusLabel[c.status] || c.status}${c.reason ? `<br><small>${escapeHtml(c.reason)}</small>` : ''}</td></tr>`).join('')}</tbody></table>`;
+        } else {
+          div.innerHTML = `<table class="stack-mobile"><thead><tr><th>Cliente</th><th>Monto</th><th>Vencimiento</th><th>Período</th></tr></thead><tbody>${candidates.map(c => `<tr><td>${escapeHtml(c.billed_for_name)}</td><td>$${Number(c.amount).toFixed(2)}</td><td>${c.due_on}</td><td>${c.billing_period}</td></tr>`).join('')}</tbody></table>`;
+        }
       } catch (err) { div.innerHTML = `<p class="form-error">${escapeHtml(err.message)}</p>`; }
     });
     root.querySelector('#diag-reset-password')?.addEventListener('click', async () => {

@@ -1903,6 +1903,15 @@ app.get('/api/superadmin/diagnostics', { preHandler: async r => { await requireS
 });
 
 app.get('/api/superadmin/billing-candidates', { preHandler: async r => { await requireSuperadmin(r); } }, async () => {
+  if (billingEngine.state === 'new') {
+    const owners = await sql`SELECT DISTINCT owner_id FROM billing_subscriptions`;
+    const all: { payerName: string; total: number; dueOn: string; cycleStart: string; status: string; reason: string | null }[] = [];
+    for (const { owner_id } of owners) {
+      const plan = await sql.begin('isolation level repeatable read read only', tx => planBillingGeneration(tx as any, owner_id as string));
+      for (const item of plan) all.push({ payerName: item.payerName, total: item.total, dueOn: item.dueOn, cycleStart: item.cycleStart, status: item.status, reason: item.reason });
+    }
+    return all;
+  }
   return sql`
     WITH periods AS (
       SELECT generate_series(
