@@ -1,4 +1,4 @@
-const APP_VERSION = '345';
+const APP_VERSION = '346';
 const markPwaVersion = () => document.querySelectorAll('.topbar-actions').forEach(actions => {
   if (actions.querySelector('[data-pwa-version]')) return;
   const indicator = document.createElement('span');
@@ -7874,12 +7874,14 @@ function renderAudit() {
       const verb = billingActionLabel[a.action] || a.action;
       const code = d?.code || '';
       const nombre = a.payerName || d?.payerName || extractName(d) || '';
-      const action = code ? `${verb} ${code}` : nombre ? `${verb} · ${nombre}` : verb;
+      const action = code && nombre ? `${verb} ${code} · ${nombre}` : code ? `${verb} ${code}` : nombre ? `${verb} · ${nombre}` : verb;
       const detailParts = [];
-      if (d?.total != null) detailParts.push(`$${Number(d.total).toFixed(2)}`);
+      if (d?.amount != null) detailParts.push(`$${Number(d.amount).toFixed(2)}`);
+      else if (d?.total != null) detailParts.push(`$${Number(d.total).toFixed(2)}`);
+      if (d?.method) detailParts.push(d.method);
+      if (d?.kind) detailParts.push(d.kind);
       if (d?.reason) detailParts.push(d.reason);
       if (d?.lines) detailParts.push(`${d.lines} línea${d.lines > 1 ? 's' : ''}`);
-      if (nombre && code) detailParts.push(nombre);
       entries.push({ _source: 'billing', _at: a.at, user_email: a.user, _action: action, _detail: detailParts.join(' · ') });
     }
     entries.sort((a, b) => new Date(b._at) - new Date(a._at));

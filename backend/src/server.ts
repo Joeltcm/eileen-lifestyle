@@ -998,7 +998,7 @@ app.post('/api/billing/invoices', { preHandler: requireStaff }, async (request, 
           VALUES (${invoice.id}, ${line.beneficiaryClientId}, ${line.planId}, ${line.lineType}, ${line.description}, ${line.quantity}, ${line.unitAmount}, ${line.amount}, ${line.sessionsReference})`;
       }
       await auditBilling(transaction, auth.sub, auth.sub, 'CREATE_INVOICE', 'invoice', invoice.id, {
-        code: billingCode(invoice.number), payerClientId: input.payerClientId, kind: input.kind, cycleStart, cycleEnd, total, lines: valid.length
+        code: billingCode(invoice.number), payerClientId: input.payerClientId, payerName: payer.full_name, kind: input.kind, cycleStart, cycleEnd, total, lines: valid.length
       });
       return invoice;
     });
@@ -1021,17 +1021,18 @@ app.post('/api/billing/invoices/:id/void', { preHandler: requireStaff }, async (
   const { reason } = z.object({ reason: z.string().trim().min(3, 'Indique el motivo').max(300) }).parse(request.body);
   const result = await sql.begin(async transaction => {
     const [invoice] = await transaction`
-      SELECT id, number, status FROM billing_invoices WHERE id = ${id} AND owner_id = ${auth.sub} FOR UPDATE`;
+      SELECT bi.id, bi.number, bi.status, bi.total, bi.kind, bi.cycle_start, bi.cycle_end, p.full_name AS payer_name
+      FROM billing_invoices bi JOIN clients p ON p.id = bi.payer_client_id
+      WHERE bi.id = ${id} AND bi.owner_id = ${auth.sub} FOR UPDATE OF bi`;
     if (!invoice) return { error: 404 as const };
     if (invoice.status === 'anulada') return { error: 409 as const, message: 'La factura ya está anulada' };
     const [{ n }] = await transaction`
       SELECT count(*)::int AS n FROM billing_payment_applications WHERE invoice_id = ${id} AND reversed_at IS NULL`;
     if (n > 0) return { error: 409 as const, message: 'La factura tiene cobros aplicados: revierta primero esas aplicaciones, con su motivo' };
     await transaction`UPDATE billing_invoices SET status = 'anulada', void_reason = ${reason}, voided_at = now(), voided_by = ${auth.sub} WHERE id = ${id}`;
-    // Una factura de rutinas sueltas anulada deja sin efecto su bono: las rutinas dejan de estar disponibles.
     const bonosAnulados = await transaction`UPDATE routine_entitlements SET status = 'cancelled', updated_at = now() WHERE invoice_id = ${id} AND status = 'active' RETURNING id`;
     for (const bono of bonosAnulados) await transaction`UPDATE routine_assignments SET active = false, ends_on = (now() AT TIME ZONE 'America/Panama')::date WHERE entitlement_id = ${bono.id} AND active = true`;
-    await auditBilling(transaction, auth.sub, auth.sub, 'VOID_INVOICE', 'invoice', id, { code: billingCode(invoice.number), reason, routineEntitlementsCancelled: bonosAnulados.length });
+    await auditBilling(transaction, auth.sub, auth.sub, 'VOID_INVOICE', 'invoice', id, { code: billingCode(invoice.number), payerName: invoice.payer_name, total: Number(invoice.total), kind: invoice.kind, reason, routineEntitlementsCancelled: bonosAnulados.length });
     return { number: Number(invoice.number) };
   });
   if ('error' in result) {
@@ -1298,8 +1299,9 @@ app.post('/api/billing/payments', { preHandler: requireStaff }, async (request, 
         INSERT INTO billing_payments (owner_id, payer_client_id, paid_on, amount, method, reference, notes, created_by)
         VALUES (${auth.sub}, ${input.payerClientId}, ${paidOn}, ${amount}, ${input.method}, ${input.reference || null}, ${input.notes || null}, ${auth.sub})
         RETURNING id`;
+      const [payerInfo] = await transaction`SELECT full_name FROM clients WHERE id = ${input.payerClientId}`;
       await auditBilling(transaction, auth.sub, auth.sub, 'CREATE_PAYMENT', 'payment', payment.id, {
-        payerClientId: input.payerClientId, paidOn, amount, method: input.method, reference: input.reference || null
+        payerClientId: input.payerClientId, payerName: payerInfo?.full_name || null, paidOn, amount, method: input.method, reference: input.reference || null
       });
       let available = amount;
       if (input.applications?.length) {
@@ -1352,13 +1354,13 @@ app.post('/api/billing/payments/:id/void', { preHandler: requireStaff }, async (
   const { reason } = billingReasonInput.parse(request.body);
   try {
     return await sql.begin(async transaction => {
-      const [payment] = await transaction`SELECT id, voided_at FROM billing_payments WHERE id = ${id} AND owner_id = ${auth.sub} FOR UPDATE`;
+      const [payment] = await transaction`SELECT bp.id, bp.voided_at, bp.amount, bp.method, p.full_name AS payer_name FROM billing_payments bp JOIN clients p ON p.id = bp.payer_client_id WHERE bp.id = ${id} AND bp.owner_id = ${auth.sub} FOR UPDATE OF bp`;
       if (!payment) throw new BillingNotFound('Cobro no encontrado');
       if (payment.voided_at) throw new BillingConflict('El cobro ya está anulado');
       const [{ n }] = await transaction`SELECT count(*)::int AS n FROM billing_payment_applications WHERE payment_id = ${id} AND reversed_at IS NULL`;
       if (n > 0) throw new BillingConflict('El cobro tiene aplicaciones vigentes: revierta primero esas aplicaciones, con su motivo');
       await transaction`UPDATE billing_payments SET voided_at = now(), void_reason = ${reason}, voided_by = ${auth.sub} WHERE id = ${id}`;
-      await auditBilling(transaction, auth.sub, auth.sub, 'VOID_PAYMENT', 'payment', id, { reason });
+      await auditBilling(transaction, auth.sub, auth.sub, 'VOID_PAYMENT', 'payment', id, { payerName: payment.payer_name, amount: Number(payment.amount), method: payment.method, reason });
       return { voided: true };
     });
   } catch (error) { throw billingDbError(error); }
