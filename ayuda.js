@@ -459,12 +459,12 @@ const helpTopics = [
       ]),
       helpWarn('Al crear una factura a mano que tapa un ciclo que el sistema iba a emitir, desmarca antes «Facturación automática» de esa línea (y vuelve a marcarla después); si no, el sistema puede emitir la completa antes de que termines.'),
       helpTable(['Tipo de factura', 'Cuándo se usa'], [
-        ['Mensualidad', 'El cobro mensual de un plan, por ciclo.'],
-        ['A crédito', 'Clases dadas, cobradas al final del mes (clientes que entrenan y pagan después).'],
-        ['Paquete', 'Un paquete de clases con su vigencia.'],
-        ['Clase suelta', 'Una clase cobrada una sola vez.'],
-        ['Rutina suelta', 'Rutinas vendidas con su ventana de fechas.'],
-        ['Manual', 'Cualquier otro cobro puntual.']
+        ['Mensualidad', 'Cobro mensual anticipado: se paga al inicio del ciclo. La primera factura se crea a mano (el sistema necesita una referencia). A partir de la segunda, se emiten automáticamente el mismo día del corte configurado en el expediente y vencen al día siguiente. Si cambias el día de corte, el sistema salta al nuevo corte sin generar un ciclo intermedio de pocos días.'],
+        ['A crédito', 'Cobro posterior: el cliente entrena durante el ciclo y paga al final, solo por las clases realmente impartidas (más las cancelaciones marcadas como cobrables). La factura se emite automáticamente el último día del ciclo a partir de las 21:00, cuando ya están marcadas las clases del día. La primera también se crea a mano.'],
+        ['Paquete', 'Un paquete de clases con su vigencia en días (por defecto 35 días). Es anticipado: se cobra al inicio. La primera factura se crea a mano; las siguientes se emiten automáticamente al cumplirse los días del paquete. Si hay una pausa, el ciclo se extiende por los días congelados.'],
+        ['Clase suelta', 'Una clase cobrada una sola vez. Siempre se crea a mano; no genera ciclo ni se repite.'],
+        ['Rutina suelta', 'Rutinas vendidas con su ventana de fechas. Se crea a mano; no genera ciclo ni se repite.'],
+        ['Manual', 'Cualquier otro cobro puntual. Se crea a mano.']
       ]),
       helpFaq([
         { q: '¿Qué es “anticipado” y “a crédito”?', a: 'Anticipado: el cliente paga al inicio del ciclo. A crédito: entrena y paga al final, solo por lo que se dio. Se elige en «Editar plan y corte».' },
