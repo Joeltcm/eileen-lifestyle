@@ -1196,3 +1196,20 @@ code{background:#f4ecf0;border-radius:6px;padding:1px 6px;font:12px 'DM Mono'}
 .news-icon{flex:0 0 auto;width:40px;height:40px;border-radius:12px;display:grid;place-items:center;font-size:21px;background:#f9e7ee}
 .news-item b{font:600 15px 'DM Sans'}.news-item p{margin:4px 0 0;color:var(--ink-2);font-size:14px;line-height:1.5}.news-item>div{min-width:0}
 .news-go{margin-top:8px;min-height:44px}
+
+/* Auditoría y Diagnósticos (superadmin) */
+.online-dot.offline{background:#e74c3c;box-shadow:0 0 0 4px #e74c3c22}
+.badge{display:inline-block;padding:3px 8px;border-radius:6px;font-size:10px;font-weight:600;background:#eee;color:var(--ink)}
+.badge-access{background:#e8f0fe;color:#1a73e8}
+.badge-destructive{background:#fce4ec;color:#c62828}
+.badge-billing{background:#e8f5e9;color:#2e7d32}
+.diag-kv{padding:6px 0;font-size:13px;border-bottom:1px solid var(--line)}
+.diag-kv b{color:var(--muted);font-weight:500;margin-right:6px}
+.audit-detail{max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#audit-root .toolbar{flex-wrap:wrap}
+#audit-root .toolbar select,#audit-root .toolbar input{min-width:0;flex:1 1 140px}
+#diagnostics-root .metrics{margin-top:0}
+#diagnostics-root .metrics article{display:flex;align-items:center;gap:10px}
+#diagnostics-root .metrics article:after{display:none}
+#diagnostics-root .metrics strong{font-size:13px;margin:0}
+#diagnostics-root .metrics span{font-size:11px;margin:0}

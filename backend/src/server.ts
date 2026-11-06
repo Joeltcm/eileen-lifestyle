@@ -31,7 +31,7 @@ import { routineCutoffPeriodOffset, routineCycle } from './routine-cycle.js';
 import { routineCycleReport } from './routine-cycle-report.js';
 import { routineCyclePrep, type RoutinePrepItem } from './routine-cycle-prep.js';
 
-type AuthUser = { sub: string; role: 'admin' | 'trainer' | 'client'; email: string };
+type AuthUser = { sub: string; role: 'admin' | 'trainer' | 'client' | 'superadmin'; email: string };
 const app = Fastify({ logger: true, trustProxy: true });
 const maxDocumentSize = 20 * 1024 * 1024;
 const documentContentTypes = ['application/pdf', 'image/jpeg', 'image/png', 'image/webp'] as const;
@@ -98,8 +98,18 @@ const sessionLifetime = '30d';
 
 async function requireStaff(request: FastifyRequest) {
   const user = await requireAuth(request);
-  if (!['admin', 'trainer'].includes(user.role)) {
+  if (!['admin', 'trainer', 'superadmin'].includes(user.role)) {
     const error = new Error('Acceso restringido');
+    (error as Error & { statusCode: number }).statusCode = 403;
+    throw error;
+  }
+  return user;
+}
+
+async function requireSuperadmin(request: FastifyRequest) {
+  const user = await requireAuth(request);
+  if (user.role !== 'superadmin') {
+    const error = new Error('Acceso restringido a superadmin');
     (error as Error & { statusCode: number }).statusCode = 403;
     throw error;
   }
@@ -507,7 +517,9 @@ async function recalcularFacturasNoAnticipadas(ownerId?: string) {
   return updated;
 }
 
-async function generateRecurringInvoices(ownerId?: string) {
+async function generateRecurringInvoices(ownerId?: string, trigger: 'cron' | 'manual' | 'startup' = 'cron') {
+  const [run] = await sql`INSERT INTO billing_runs (trigger) VALUES (${trigger}) RETURNING id`;
+  try {
   const selectedOwner = ownerId || null;
   const fechasCorregidas = await normalizarFechasFacturasAutomaticas(selectedOwner || undefined);
   const invoices = await sql`
@@ -726,7 +738,12 @@ async function generateRecurringInvoices(ownerId?: string) {
   }
   const creditInvoicesRecalculated = await recalcularFacturasNoAnticipadas(selectedOwner || undefined);
   const descuentos = await aplicarCreditos(invoices as unknown as CobroGenerado[]);
+  await sql`UPDATE billing_runs SET finished_at = now(), candidates_found = ${invoices.length + descuentos}, invoices_generated = ${invoices.length}, detail = ${sql.json({ balances: pendientes.length, descuentos, creditInvoicesRecalculated, fechasCorregidas })} WHERE id = ${run.id}`;
   return { generated: invoices.length, balances: pendientes.length, reposiciones: 0, descuentos, creditInvoicesRecalculated, fechasCorregidas, invoices };
+  } catch (error) {
+    await sql`UPDATE billing_runs SET finished_at = now(), errors = ${sql.json({ message: (error as Error).message, stack: (error as Error).stack?.slice(0, 500) })} WHERE id = ${run.id}`.catch(() => {});
+    throw error;
+  }
 }
 
 // Sistema anterior RETIRADO tras el corte (J-067): fuera del estado `legacy` (o `shadow`) las rutas que ESCRIBÍAN cobros, pagos y coberturas del sistema
@@ -1773,7 +1790,7 @@ app.post('/api/billing/recurring/generate', { preHandler: requireStaff }, async 
   if (!billingEngine.legacyWrites) {
     return { ...status, generated: 0, message: `La generación del sistema anterior está apagada (${billingEngine.state}).` };
   }
-  const result = await generateRecurringInvoices(auth.sub);
+  const result = await generateRecurringInvoices(auth.sub, 'manual');
   return { ...(await recurringBillingStatus(auth.sub)), generated: result.generated, balances: result.balances, reposiciones: result.reposiciones, descuentos: result.descuentos, creditInvoicesRecalculated: result.creditInvoicesRecalculated, fechasCorregidas: result.fechasCorregidas };
 });
 
@@ -1841,6 +1858,133 @@ app.get('/api/audit-log', { preHandler: requireStaff }, async request => {
     SELECT id, user_email, action, route, target_id, detail, created_at
     FROM audit_log ORDER BY created_at DESC LIMIT ${consulta.limit}
   `;
+});
+
+app.get('/api/auth-attempts', { preHandler: async r => { await requireSuperadmin(r); } }, async request => {
+  const query = z.object({
+    limit: z.coerce.number().int().min(1).max(500).default(100),
+    email: z.string().optional(),
+    since: z.string().optional()
+  }).parse(request.query);
+  return sql`
+    SELECT id, endpoint, email, ip, succeeded, created_at
+    FROM auth_attempts
+    WHERE (${query.email || null}::text IS NULL OR email = ${query.email?.toLowerCase() || null})
+      AND (${query.since || null}::text IS NULL OR created_at >= ${query.since || '1970-01-01'}::date)
+    ORDER BY created_at DESC LIMIT ${query.limit}
+  `;
+});
+
+app.get('/api/superadmin/diagnostics', { preHandler: async r => { await requireSuperadmin(r); } }, async () => {
+  const [database] = await sql`SELECT now() AS time`;
+  const [authStats] = await sql`
+    SELECT
+      count(*) FILTER (WHERE NOT succeeded AND created_at > now() - interval '1 hour')::int AS recent_failures,
+      count(DISTINCT email) FILTER (WHERE NOT succeeded AND created_at > now() - interval '15 minutes')::int AS blocked_emails,
+      count(DISTINCT ip) FILTER (WHERE NOT succeeded AND created_at > now() - interval '15 minutes')::int AS blocked_ips
+    FROM auth_attempts
+  `;
+  const billingRuns = await sql`
+    SELECT id, trigger, started_at, finished_at, candidates_found, invoices_generated, errors
+    FROM billing_runs ORDER BY started_at DESC LIMIT 20
+  `;
+  return {
+    health: {
+      database: 'ok', databaseTime: database.time,
+      storage: storageReady ? 'ready' : 'not_configured',
+      push: webPushReady ? 'configured' : 'not_configured',
+      googleCalendar: config.GOOGLE_CLIENT_ID && config.GOOGLE_CLIENT_SECRET ? 'configured' : 'not_configured'
+    },
+    billingEngine: { ...billingEngine, intervalMinutes: config.BILLING_INTERVAL_MINUTES },
+    auth: authStats,
+    billingRuns,
+    server: { uptime: process.uptime(), nodeVersion: process.version, startedAt: new Date(Date.now() - process.uptime() * 1000).toISOString() }
+  };
+});
+
+app.get('/api/superadmin/billing-candidates', { preHandler: async r => { await requireSuperadmin(r); } }, async () => {
+  return sql`
+    WITH periods AS (
+      SELECT generate_series(
+        date_trunc('month', current_date),
+        date_trunc('month', current_date) + interval '1 month',
+        interval '1 month'
+      )::date AS billing_period
+    ), schedule AS (
+      SELECT COALESCE(c.billing_responsible_client_id, c.id) AS client_id,
+        c.id AS billed_for_client_id, c.full_name AS billed_for_name,
+        c.owner_id, CASE WHEN c.payment_mode = 'no_anticipado' THEN 0 ELSE c.standard_price END AS amount,
+        COALESCE(p.name, 'Mensualidad') AS plan_name, periods.billing_period,
+        make_date(
+          extract(year FROM periods.billing_period)::integer,
+          extract(month FROM periods.billing_period)::integer,
+          least(c.billing_cutoff_day, extract(day FROM (periods.billing_period + interval '1 month - 1 day'))::integer)
+        ) AS due_on
+      FROM clients c
+      LEFT JOIN service_plans p ON p.id = c.plan_id
+      CROSS JOIN periods
+      WHERE c.status = 'active' AND c.service_mode <> 'demo' AND c.billing_model = 'monthly' AND c.standard_price > 0
+    ), candidates AS (
+      SELECT s.*
+      FROM schedule s
+      WHERE s.billing_period = date_trunc('month', current_date)::date
+        AND s.due_on <= current_date
+        AND EXISTS (
+          SELECT 1 FROM memberships m
+          WHERE m.client_id = s.billed_for_client_id AND m.status = 'active' AND m.starts_on <= s.due_on
+            AND (m.ends_on IS NULL OR m.ends_on >= s.billing_period)
+        )
+        AND NOT EXISTS (
+          SELECT 1 FROM invoices i
+          WHERE COALESCE(i.billed_for_client_id, i.client_id) = s.billed_for_client_id AND i.status <> 'void'
+            AND date_trunc('month', COALESCE(i.billing_period, i.issued_on, i.due_on))::date = s.billing_period
+            AND (i.auto_generated = true OR i.source_system = 'zoho_invoice'
+              OR (i.package_id IS NULL AND i.amount = s.amount)
+              OR lower(i.concept) LIKE '%mensual%')
+        )
+        AND NOT EXISTS (
+          SELECT 1 FROM invoice_coverage cov
+          JOIN invoices ci ON ci.id = cov.invoice_id AND ci.status <> 'void'
+          WHERE cov.client_id = s.billed_for_client_id
+            AND date_trunc('month', ci.due_on)::date = s.billing_period
+        )
+    )
+    SELECT * FROM candidates
+  `;
+});
+
+app.post('/api/superadmin/reset-user-password', { preHandler: async r => { await requireSuperadmin(r); } }, async (request, reply) => {
+  const input = z.object({ userId: z.string().uuid(), newPassword: z.string().min(10) }).parse(request.body);
+  const hash = await bcrypt.hash(input.newPassword, 12);
+  const [user] = await sql`UPDATE users SET password_hash = ${hash}, updated_at = now() WHERE id = ${input.userId} RETURNING id, email`;
+  if (!user) return reply.code(404).send({ error: 'Usuario no encontrado' });
+  return { ok: true, email: user.email };
+});
+
+app.post('/api/superadmin/clear-auth-blocks', { preHandler: async r => { await requireSuperadmin(r); } }, async request => {
+  const input = z.object({ email: z.string().email().optional(), ip: z.string().optional() }).parse(request.body);
+  let deleted = 0;
+  if (input.email) {
+    const result = await sql`DELETE FROM auth_attempts WHERE email = ${input.email.toLowerCase()} AND NOT succeeded`;
+    deleted += result.count;
+  }
+  if (input.ip) {
+    const result = await sql`DELETE FROM auth_attempts WHERE ip = ${input.ip} AND NOT succeeded`;
+    deleted += result.count;
+  }
+  return { ok: true, deleted };
+});
+
+app.post('/api/superadmin/trigger-billing', { preHandler: async r => { await requireSuperadmin(r); } }, async () => {
+  if (!billingEngine.legacyWrites) {
+    return { generated: 0, message: `La generación del sistema anterior está apagada (${billingEngine.state}).` };
+  }
+  const result = await generateRecurringInvoices(undefined, 'manual');
+  return { generated: result.generated, balances: result.balances, reposiciones: result.reposiciones, descuentos: result.descuentos, creditInvoicesRecalculated: result.creditInvoicesRecalculated };
+});
+
+app.get('/api/superadmin/users', { preHandler: async r => { await requireSuperadmin(r); } }, async () => {
+  return sql`SELECT id, email, full_name, role, active, created_at FROM users ORDER BY full_name`;
 });
 
 // ── Freno a la fuerza bruta ───────────────────────────────────────────────
@@ -1966,6 +2110,36 @@ app.get('/api/me', { preHandler: requireAuth }, async request => {
   const auth = request.user as AuthUser;
   const [user] = await sql`SELECT id, email, full_name, role FROM users WHERE id = ${auth.sub}`;
   return { user, token: renovado };
+});
+
+const changeEmailSchema = z.object({ currentPassword: z.string().min(1), newEmail: z.string().email() });
+app.post('/api/auth/change-email', async (request, reply) => {
+  const auth = await requireAuth(request);
+  const input = changeEmailSchema.parse(request.body);
+  const [user] = await sql`SELECT id, password_hash FROM users WHERE id = ${auth.sub}`;
+  if (!user || !(await bcrypt.compare(input.currentPassword, user.password_hash))) {
+    return reply.code(401).send({ error: 'Contraseña actual incorrecta' });
+  }
+  const [existing] = await sql`SELECT id FROM users WHERE email = ${input.newEmail.toLowerCase()} AND id <> ${auth.sub}`;
+  if (existing) return reply.code(409).send({ error: 'Ese correo ya está en uso' });
+  const [updated] = await sql`
+    UPDATE users SET email = ${input.newEmail.toLowerCase()}, updated_at = now()
+    WHERE id = ${auth.sub} RETURNING id, email, full_name, role`;
+  const token = app.jwt.sign({ sub: updated.id, email: updated.email, role: updated.role }, { expiresIn: sessionLifetime });
+  return { user: { id: updated.id, email: updated.email, fullName: updated.full_name, role: updated.role }, token };
+});
+
+const changePasswordSchema = z.object({ currentPassword: z.string().min(1), newPassword: z.string().min(10) });
+app.post('/api/auth/change-password', async (request, reply) => {
+  const auth = await requireAuth(request);
+  const input = changePasswordSchema.parse(request.body);
+  const [user] = await sql`SELECT id, password_hash FROM users WHERE id = ${auth.sub}`;
+  if (!user || !(await bcrypt.compare(input.currentPassword, user.password_hash))) {
+    return reply.code(401).send({ error: 'Contraseña actual incorrecta' });
+  }
+  const hash = await bcrypt.hash(input.newPassword, 12);
+  await sql`UPDATE users SET password_hash = ${hash}, updated_at = now() WHERE id = ${auth.sub}`;
+  return { ok: true };
 });
 
 const planSchema = z.object({
@@ -10616,8 +10790,8 @@ else app.log.info({ state: billingEngine.state }, 'Estado operativo de la factur
 const firstNewBillingRun = setTimeout(() => { if (billingEngine.newWrites) runNewBillingGenerationForAll().catch(error => app.log.error(error)); }, 30_000);
 // Cada 15 minutos como máximo (J-081): el día del corte hay ~96 intentos y la factura de Julio (desde las 21:00) tiene ~12 en su ventana; cada intento es idempotente.
 const newBillingInterval = setInterval(() => { if (billingEngine.newWrites) runNewBillingGenerationForAll().catch(error => app.log.error(error)); }, Math.min(config.BILLING_INTERVAL_MINUTES, 15) * 60_000);
-const firstBillingRun = setTimeout(() => { if (billingEngine.legacyWrites) generateRecurringInvoices().catch(error => app.log.error(error)); }, 15_000);
-const billingInterval = setInterval(() => { if (billingEngine.legacyWrites) generateRecurringInvoices().catch(error => app.log.error(error)); }, config.BILLING_INTERVAL_MINUTES * 60_000);
+const firstBillingRun = setTimeout(() => { if (billingEngine.legacyWrites) generateRecurringInvoices(undefined, 'startup').catch(error => app.log.error(error)); }, 15_000);
+const billingInterval = setInterval(() => { if (billingEngine.legacyWrites) generateRecurringInvoices(undefined, 'cron').catch(error => app.log.error(error)); }, config.BILLING_INTERVAL_MINUTES * 60_000);
 // Los intentos de acceso viejos no sirven para nada pasada la ventana; se
 // barren una vez al día para que la tabla no crezca sin fin.
 const purgaIntentos = setInterval(() => purgarIntentos().catch(error => app.log.error(error)), 24 * 60 * 60_000);

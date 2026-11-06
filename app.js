@@ -542,7 +542,7 @@ async function loadData() {
 const initials = name => name.split(' ').slice(0, 2).map(word => word[0]).join('').toUpperCase();
 const modalidadPlan = modelo => modelo === 'package' ? 'Paquete' : modelo === 'single' ? 'Sesión suelta' : 'Mensualidad';
 const escapeHtml = value => String(value).replace(/[&<>"']/g, character => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[character]);
-const viewTitles = { dashboard: 'Buenos días', clients: 'Clientes', calendar: 'Agenda', routines: 'Rutinas', attendance: 'Asistencia', billing: 'Facturación', quotes: 'Cotizaciones', help: 'Ayuda' };
+const viewTitles = { dashboard: 'Buenos días', clients: 'Clientes', calendar: 'Agenda', routines: 'Rutinas', attendance: 'Asistencia', billing: 'Facturación', quotes: 'Cotizaciones', help: 'Ayuda', audit: 'Auditoría', diagnostics: 'Diagnósticos' };
 const viewIds = new Set(Object.keys(viewTitles));
 const viewFromHash = () => {
   const id = window.location.hash.slice(1);
@@ -560,6 +560,8 @@ const navigate = (id, { replace = false } = {}) => {
   if (target === 'attendance') loadAttendanceReport();
   if (target === 'quotes') { if (quotesState.editor) renderQuoteEditor(); else loadQuotes(); }
   if (target === 'help') renderHelp();
+  if (target === 'audit') renderAudit();
+  if (target === 'diagnostics') renderDiagnostics();
   if (target === 'billing' && document.querySelector('#billing .subtab.active')?.dataset.subtab === 'facturas-nuevo') newBillingInvoices();
   const hash = `#${target}`;
   if (window.location.hash !== hash) window.history[replace ? 'replaceState' : 'pushState'](null, '', hash);
@@ -7707,6 +7709,7 @@ async function enterApp(user) {
   if (user.role === 'client') return enterPortal(user);
   const restoredView = viewFromHash();
   currentUser = user; view(restoredView); document.getElementById('auth-screen').hidden = true; document.getElementById('portal-shell').hidden = true; document.getElementById('app-shell').hidden = false;
+  document.querySelectorAll('.superadmin-only').forEach(el => { el.hidden = user.role !== 'superadmin'; });
   document.getElementById('account-button').textContent = initials(user.fullName || user.full_name || user.email);
   await loadData(); renderAll(); navigate(restoredView, { replace: true }); showGoogleCalendarReturn(); startCalendarSynchronization();
   if (typeof maybeShowWhatsNew === 'function') maybeShowWhatsNew();
@@ -7749,16 +7752,192 @@ const logout = () => {
 // menú te sacaba de la aplicación. Ahora abre la cuenta y salir es explícito.
 function accountMenu() {
   const nombre = currentUser?.fullName || currentUser?.full_name || '';
-  const rol = currentUser?.role === 'client' ? 'Cliente' : currentUser?.role === 'admin' ? 'Administradora' : 'Entrenadora';
+  const rol = currentUser?.role === 'client' ? 'Cliente' : currentUser?.role === 'superadmin' ? 'Superadmin' : currentUser?.role === 'admin' ? 'Administradora' : 'Entrenadora';
   const box = document.createElement('div');
   box.innerHTML = `<p class="eyebrow">TU CUENTA</p><h2>${escapeHtml(nombre || 'Sesión activa')}</h2>
     <div class="account-card"><div><b>${escapeHtml(currentUser?.email || '')}</b><small>${rol}</small></div><span class="initials">${initials(nombre || currentUser?.email || '')}</span></div>
+    <button class="secondary wide-button" id="account-change-email">Cambiar correo</button>
+    <button class="secondary wide-button" id="account-change-password">Cambiar contraseña</button>
     ${currentUser?.role !== 'client' ? '<button class="secondary wide-button" id="account-help">💡 Centro de ayuda</button><button class="secondary wide-button" id="account-news">✨ Novedades</button><button class="secondary wide-button" id="demo-contact-settings">Ajustes de la cuenta</button>' : ''}<button class="secondary wide-button" id="account-logout">Cerrar sesión</button>`;
   openModal(box);
+  document.getElementById('account-change-email')?.addEventListener('click', accountChangeEmail);
+  document.getElementById('account-change-password')?.addEventListener('click', accountChangePassword);
   document.getElementById('demo-contact-settings')?.addEventListener('click', accountDemoSettings);
   document.getElementById('account-help')?.addEventListener('click', () => openHelp());
   document.getElementById('account-news')?.addEventListener('click', () => openWhatsNew());
   document.getElementById('account-logout').onclick = () => { modal.close(); logout(); };
+}
+function accountChangeEmail() {
+  const box = document.createElement('div');
+  box.innerHTML = `<p class="eyebrow">CAMBIAR CORREO</p><h2>Nuevo correo electrónico</h2>
+    <form id="change-email-form">
+      <label>Contraseña actual<input name="currentPassword" type="password" required autocomplete="current-password" /></label>
+      <label>Nuevo correo<input name="newEmail" type="email" required autocomplete="email" /></label>
+      <p class="form-error" id="change-email-error"></p>
+      <button class="primary wide-button">Guardar nuevo correo</button>
+      <button type="button" class="secondary wide-button" id="change-email-back">← Volver</button>
+    </form>`;
+  openModal(box);
+  box.querySelector('#change-email-back').onclick = () => { modal.close(); accountMenu(); };
+  box.querySelector('#change-email-form').onsubmit = async e => {
+    e.preventDefault(); const fd = new FormData(e.target); const errEl = box.querySelector('#change-email-error'); errEl.textContent = '';
+    try {
+      e.target.classList.add('loading-state');
+      const result = await api('/api/auth/change-email', { method: 'POST', body: { currentPassword: fd.get('currentPassword'), newEmail: fd.get('newEmail') } });
+      authToken = result.token; localStorage.setItem(authKey, authToken); currentUser = result.user;
+      modal.close(); toast('Correo actualizado');
+    } catch (err) { errEl.textContent = err.message; } finally { e.target.classList.remove('loading-state'); }
+  };
+}
+function accountChangePassword() {
+  const box = document.createElement('div');
+  box.innerHTML = `<p class="eyebrow">CAMBIAR CONTRASEÑA</p><h2>Nueva contraseña</h2>
+    <form id="change-password-form">
+      <label>Contraseña actual<input name="currentPassword" type="password" required autocomplete="current-password" /></label>
+      <label>Nueva contraseña (mín. 10 caracteres)<input name="newPassword" type="password" required minlength="10" autocomplete="new-password" /></label>
+      <label>Confirmar nueva contraseña<input name="confirmPassword" type="password" required minlength="10" autocomplete="new-password" /></label>
+      <p class="form-error" id="change-password-error"></p>
+      <button class="primary wide-button">Guardar nueva contraseña</button>
+      <button type="button" class="secondary wide-button" id="change-password-back">← Volver</button>
+    </form>`;
+  openModal(box);
+  box.querySelector('#change-password-back').onclick = () => { modal.close(); accountMenu(); };
+  box.querySelector('#change-password-form').onsubmit = async e => {
+    e.preventDefault(); const fd = new FormData(e.target); const errEl = box.querySelector('#change-password-error'); errEl.textContent = '';
+    if (fd.get('newPassword') !== fd.get('confirmPassword')) { errEl.textContent = 'Las contraseñas no coinciden'; return; }
+    try {
+      e.target.classList.add('loading-state');
+      await api('/api/auth/change-password', { method: 'POST', body: { currentPassword: fd.get('currentPassword'), newPassword: fd.get('newPassword') } });
+      modal.close(); toast('Contraseña actualizada');
+    } catch (err) { errEl.textContent = err.message; } finally { e.target.classList.remove('loading-state'); }
+  };
+}
+function renderAudit() {
+  const root = document.getElementById('audit-root');
+  root.innerHTML = '<div class="section-heading"><p class="eyebrow">REGISTRO DE CAMBIOS</p></div><div class="toolbar"><select id="audit-type-filter" aria-label="Tipo"><option value="all">Todos</option><option value="access">Accesos</option><option value="destructive">Borrados</option><option value="billing">Facturación</option></select><input id="audit-email-filter" type="search" placeholder="Filtrar por correo…" /><input id="audit-since-filter" type="date" /></div><div id="audit-table-wrap" class="table-wrap"><p class="empty">Cargando…</p></div>';
+  const typeFilter = root.querySelector('#audit-type-filter');
+  const emailFilter = root.querySelector('#audit-email-filter');
+  const sinceFilter = root.querySelector('#audit-since-filter');
+  let allEntries = [];
+  const renderTable = () => {
+    const type = typeFilter.value;
+    const email = emailFilter.value.trim().toLowerCase();
+    const since = sinceFilter.value;
+    let filtered = allEntries;
+    if (type !== 'all') filtered = filtered.filter(e => e._source === type);
+    if (email) filtered = filtered.filter(e => (e.email || e.user_email || '').toLowerCase().includes(email));
+    if (since) filtered = filtered.filter(e => e._at >= since);
+    const wrap = root.querySelector('#audit-table-wrap');
+    if (!filtered.length) { wrap.innerHTML = '<p class="empty">Sin registros para estos filtros.</p>'; return; }
+    wrap.innerHTML = `<table class="stack-mobile"><thead><tr><th>Fecha</th><th>Tipo</th><th>Usuario</th><th>Acción</th><th>Detalle</th></tr></thead><tbody>${filtered.slice(0, 200).map(e => `<tr><td>${fechaHoraPanama(e._at)}</td><td><span class="badge badge-${e._source}">${e._source === 'access' ? 'Acceso' : e._source === 'destructive' ? 'Borrado' : 'Facturación'}</span></td><td>${escapeHtml(e.email || e.user_email || '—')}</td><td>${escapeHtml(e._action)}</td><td class="audit-detail">${escapeHtml(e._detail)}</td></tr>`).join('')}</tbody></table>`;
+  };
+  typeFilter.onchange = renderTable; emailFilter.oninput = renderTable; sinceFilter.onchange = renderTable;
+  Promise.all([
+    api('/api/auth-attempts?limit=300').catch(() => []),
+    api('/api/audit-log?limit=200').catch(() => []),
+    api('/api/billing/audit?limit=200').catch(() => ({ entries: [] }))
+  ]).then(([attempts, auditLog, billingAudit]) => {
+    const entries = [];
+    for (const a of attempts) entries.push({ _source: 'access', _at: a.created_at, email: a.email, _action: a.succeeded ? 'Login exitoso' : 'Login fallido', _detail: `${a.endpoint} desde ${a.ip || '?'}` });
+    for (const a of (Array.isArray(auditLog) ? auditLog : [])) entries.push({ _source: 'destructive', _at: a.created_at, user_email: a.user_email, _action: `${a.action} ${a.route}`, _detail: a.target_id || '' });
+    const bEntries = billingAudit.entries || billingAudit;
+    for (const a of (Array.isArray(bEntries) ? bEntries : [])) entries.push({ _source: 'billing', _at: a.at, user_email: a.user, _action: a.action, _detail: `${a.entity || ''} ${a.entityId || ''}` });
+    entries.sort((a, b) => new Date(b._at) - new Date(a._at));
+    allEntries = entries;
+    renderTable();
+  });
+}
+function renderDiagnostics() {
+  const root = document.getElementById('diagnostics-root');
+  root.innerHTML = '<div class="section-heading"><p class="eyebrow">ESTADO DEL SISTEMA</p></div><div id="diag-health" class="metrics"></div><div class="dashboard-grid" id="diag-panels"></div>';
+  api('/api/superadmin/diagnostics').then(d => {
+    const h = d.health;
+    const dot = status => status === 'ok' || status === 'ready' || status === 'configured' ? '<span class="online-dot"></span>' : '<span class="online-dot offline"></span>';
+    root.querySelector('#diag-health').innerHTML = `
+      <article>${dot(h.database)}<span>Base de datos</span><strong>${h.database}</strong><small>${h.databaseTime ? fechaHoraPanama(h.databaseTime) : ''}</small></article>
+      <article>${dot(h.storage)}<span>Almacenamiento</span><strong>${h.storage}</strong></article>
+      <article>${dot(h.push)}<span>Push</span><strong>${h.push}</strong></article>
+      <article>${dot(h.googleCalendar)}<span>Google Calendar</span><strong>${h.googleCalendar}</strong></article>`;
+    const be = d.billingEngine;
+    const auth = d.auth;
+    const srv = d.server;
+    const runs = d.billingRuns || [];
+    root.querySelector('#diag-panels').innerHTML = `
+      <article class="card"><div class="card-head"><div><h3>Motor de facturación</h3></div></div>
+        <div class="diag-kv"><b>Estado:</b> <span class="badge">${be.state}</span></div>
+        <div class="diag-kv"><b>Legacy escribe:</b> ${be.legacyWrites ? 'Sí' : 'No'}</div>
+        <div class="diag-kv"><b>Nuevo escribe:</b> ${be.newWrites ? 'Sí' : 'No'}</div>
+        <div class="diag-kv"><b>Intervalo:</b> cada ${be.intervalMinutes} min</div>
+        ${be.conflict ? '<p class="form-error">⚠ Conflicto de configuración</p>' : ''}
+      </article>
+      <article class="card"><div class="card-head"><div><h3>Autenticación</h3></div></div>
+        <div class="diag-kv"><b>Fallos (última hora):</b> ${auth.recent_failures}</div>
+        <div class="diag-kv"><b>Correos bloqueados:</b> ${auth.blocked_emails}</div>
+        <div class="diag-kv"><b>IPs bloqueadas:</b> ${auth.blocked_ips}</div>
+        <button class="secondary" id="diag-clear-blocks">Limpiar bloqueos</button>
+      </article>
+      <article class="card"><div class="card-head"><div><h3>Servidor</h3></div></div>
+        <div class="diag-kv"><b>Uptime:</b> ${Math.floor(srv.uptime / 3600)}h ${Math.floor((srv.uptime % 3600) / 60)}m</div>
+        <div class="diag-kv"><b>Node:</b> ${srv.nodeVersion}</div>
+        <div class="diag-kv"><b>Inicio:</b> ${fechaHoraPanama(srv.startedAt)}</div>
+      </article>
+      <article class="card wide"><div class="card-head"><div><h3>Historial de facturación automática</h3><p>Últimas 20 ejecuciones</p></div></div>
+        ${runs.length ? `<div class="table-wrap"><table class="stack-mobile"><thead><tr><th>Inicio</th><th>Origen</th><th>Candidatos</th><th>Generadas</th><th>Duración</th><th>Errores</th></tr></thead><tbody>${runs.map(r => {
+          const dur = r.finished_at ? Math.round((new Date(r.finished_at) - new Date(r.started_at)) / 1000) + 's' : 'en curso';
+          return `<tr><td>${fechaHoraPanama(r.started_at)}</td><td>${r.trigger}</td><td>${r.candidates_found}</td><td>${r.invoices_generated}</td><td>${dur}</td><td>${r.errors ? '<span class="form-error">' + escapeHtml(JSON.stringify(r.errors).slice(0, 80)) + '</span>' : '—'}</td></tr>`;
+        }).join('')}</tbody></table></div>` : '<p class="empty">Sin ejecuciones registradas todavía.</p>'}
+      </article>
+      <article class="card wide"><div class="card-head"><div><h3>Herramientas</h3></div></div>
+        <div style="display:flex;flex-wrap:wrap;gap:10px;margin-top:8px">
+          <button class="primary" id="diag-trigger-billing">Generar facturación ahora</button>
+          <button class="secondary" id="diag-show-candidates">Ver candidatos pendientes</button>
+          <button class="secondary" id="diag-reset-password">Restablecer contraseña</button>
+        </div>
+        <div id="diag-candidates" style="margin-top:12px"></div>
+        <div id="diag-reset-form" style="margin-top:12px" hidden></div>
+      </article>`;
+    root.querySelector('#diag-clear-blocks')?.addEventListener('click', async () => {
+      const email = prompt('Correo a desbloquear (vacío = todos):');
+      if (email === null) return;
+      try {
+        const result = await api('/api/superadmin/clear-auth-blocks', { method: 'POST', body: { email: email || undefined } });
+        toast(`Bloqueos eliminados: ${result.deleted}`); renderDiagnostics();
+      } catch (err) { toast(err.message, true); }
+    });
+    root.querySelector('#diag-trigger-billing')?.addEventListener('click', async () => {
+      try {
+        const result = await api('/api/superadmin/trigger-billing', { method: 'POST' });
+        toast(`Facturación ejecutada: ${result.generated} generadas`); renderDiagnostics();
+      } catch (err) { toast(err.message, true); }
+    });
+    root.querySelector('#diag-show-candidates')?.addEventListener('click', async () => {
+      const div = root.querySelector('#diag-candidates');
+      div.innerHTML = '<p class="empty">Cargando candidatos…</p>';
+      try {
+        const candidates = await api('/api/superadmin/billing-candidates');
+        if (!candidates.length) { div.innerHTML = '<p class="empty">No hay candidatos pendientes.</p>'; return; }
+        div.innerHTML = `<table class="stack-mobile"><thead><tr><th>Cliente</th><th>Monto</th><th>Vencimiento</th><th>Período</th></tr></thead><tbody>${candidates.map(c => `<tr><td>${escapeHtml(c.billed_for_name)}</td><td>$${Number(c.amount).toFixed(2)}</td><td>${c.due_on}</td><td>${c.billing_period}</td></tr>`).join('')}</tbody></table>`;
+      } catch (err) { div.innerHTML = `<p class="form-error">${escapeHtml(err.message)}</p>`; }
+    });
+    root.querySelector('#diag-reset-password')?.addEventListener('click', async () => {
+      const div = root.querySelector('#diag-reset-form');
+      if (!div.hidden) { div.hidden = true; return; }
+      div.hidden = false;
+      try {
+        const users = await api('/api/superadmin/users');
+        div.innerHTML = `<form id="diag-reset-pw-form"><label>Usuario<select name="userId">${users.map(u => `<option value="${u.id}">${escapeHtml(u.full_name || u.email)} (${u.role})</option>`).join('')}</select></label><label>Nueva contraseña (mín. 10)<input name="newPassword" type="password" minlength="10" required /></label><button class="primary">Restablecer</button></form>`;
+        div.querySelector('#diag-reset-pw-form').onsubmit = async e => {
+          e.preventDefault(); const fd = new FormData(e.target);
+          try {
+            const result = await api('/api/superadmin/reset-user-password', { method: 'POST', body: { userId: fd.get('userId'), newPassword: fd.get('newPassword') } });
+            toast(`Contraseña restablecida para ${result.email}`); div.hidden = true;
+          } catch (err) { toast(err.message, true); }
+        };
+      } catch (err) { div.innerHTML = `<p class="form-error">${escapeHtml(err.message)}</p>`; }
+    });
+  }).catch(err => {
+    root.querySelector('#diag-panels').innerHTML = `<p class="form-error">Error cargando diagnósticos: ${escapeHtml(err.message)}</p>`;
+  });
 }
 async function accountDemoSettings() {
   const box = document.createElement('div'); box.innerHTML = '<p class=”eyebrow”>AJUSTES DE LA CUENTA</p><h2>Ajustes de la cuenta</h2><form id=”demo-settings-form”><label>WhatsApp de Eileen<input name=”contactWhatsapp” inputmode=”numeric” placeholder=”Código de país + número” /></label><small>Solo dígitos con código de país. Déjalo vacío para ocultar “Hablar con Eileen”.</small><p class=”eyebrow” style=”margin-top:20px”>DATOS PARA CONTRATOS</p><label>Nombre legal<input name=”legalName” /></label><label>Identificación legal<input name=”legalId” /></label><label>Domicilio legal<textarea name=”legalAddress” rows=”2”></textarea></label><label>Ciudad del contrato<input name=”contractCity” /></label><small>Estos datos se guardan en Ajustes de la cuenta y no se incluyen en el código de la aplicación.</small><section class=”signature-preview”><b>Firma de Eileen para contratos</b><div id=”owner-signature-preview”><span class=”signature-status”>Sin firma guardada. Los contratos se pueden enviar y mostrarán el espacio pendiente.</span></div><button type=”button” class=”secondary wide-button” id=”owner-signature-edit”>Dibujar o subir firma</button></section><section class=”signature-preview”><b>Foto de portada del sitio</b><small>Aparece en tu panel y en el portal de tus clientes.</small><div id=”hero-photo-preview”><span class=”signature-status”>Usando la foto predeterminada</span></div><label class=”secondary wide-button” style=”cursor:pointer;display:block;text-align:center;margin-top:8px”>Subir foto<input type=”file” id=”hero-photo-upload” accept=”image/jpeg,image/png,image/webp” style=”display:none” /></label><button type=”button” class=”secondary wide-button” id=”hero-photo-delete” hidden>Eliminar foto personalizada</button></section><button class=”primary wide-button”>Guardar ajustes</button></form>';
