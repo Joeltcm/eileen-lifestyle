@@ -9790,7 +9790,7 @@ const routineActivitySchema = z.object({ routineId: z.string().uuid(), completed
 const routineFeedbackSchema = z.object({ routineId: z.string().uuid(), completedOn: z.string().date(), runNumber: z.coerce.number().int().min(1).max(999).optional(), feeling: z.enum(['muy_dificil', 'dificil', 'bien', 'excelente']).optional(), difficulty: z.enum(['facil', 'bien', 'dificil']).optional(), feedback: z.string().trim().max(500).optional() });
 
 async function notifyRoutineActivity(input: {
-  ownerId: string; clientId: string; routineId: string; completedOn: string; kind: 'started' | 'completed' | 'feedback' | 'expired'; clientName: string; routineTitle: string;
+  ownerId: string; clientId: string; routineId: string; completedOn: string; kind: 'started' | 'completed' | 'feedback' | 'expired' | 'viewed'; clientName: string; routineTitle: string;
   elapsedSeconds?: number; completedCount?: number; totalExercises?: number; completionPercent?: number; feeling?: string | null; difficulty?: string | null; feedback?: string | null;
   countsAsClass?: boolean; expirationMessage?: string; demo?: boolean; runNumber?: number;
 }) {
@@ -9801,9 +9801,11 @@ async function notifyRoutineActivity(input: {
   const feedbackLine = `${input.kind === 'completed' && input.countsAsClass ? '\nCuenta como su clase de hoy' : ''}${feedbackText ? `\n${feedbackText}` : ''}`;
   const prefix = input.demo ? 'Demo · ' : '';
   const repetition = Number(input.runNumber || 1) > 1 ? ` (repetición n.º ${input.runNumber})` : '';
-  const title = input.kind === 'started' ? `${prefix}Entrenamiento iniciado${repetition} · ${input.clientName}` : input.kind === 'completed' ? `${prefix}Rutina completada${repetition} · ${input.clientName}` : input.kind === 'expired' ? `${prefix}Rutina expirada${repetition} · ${input.clientName}` : `${prefix}Feedback recibido${repetition} · ${input.clientName}`;
+  const title = input.kind === 'viewed' ? `${prefix}Rutina abierta · ${input.clientName}` : input.kind === 'started' ? `${prefix}Entrenamiento iniciado${repetition} · ${input.clientName}` : input.kind === 'completed' ? `${prefix}Rutina completada${repetition} · ${input.clientName}` : input.kind === 'expired' ? `${prefix}Rutina expirada${repetition} · ${input.clientName}` : `${prefix}Feedback recibido${repetition} · ${input.clientName}`;
   const durationText = input.elapsedSeconds != null ? duracionTexto(Number(input.elapsedSeconds)) : '';
-  const body = input.kind === 'started'
+  const body = input.kind === 'viewed'
+    ? `${input.clientName} abrió el enlace de «${input.routineTitle}».`
+    : input.kind === 'started'
     ? `${input.clientName} inició «${input.routineTitle}».`
     : input.kind === 'completed'
       ? `${input.clientName} completó «${input.routineTitle}»${durationText ? ` ·${durationText}` : ''} · ${input.completedCount != null && input.totalExercises != null ? `${input.completedCount}/${input.totalExercises} ejercicios` : `${input.completionPercent || 0}%`}${feedbackLine}.`
@@ -10825,6 +10827,7 @@ app.get('/api/public/routine/:token', async (request, reply) => {
   const fila = encontrado.fila;
   await sql`UPDATE routine_share_links SET opens = opens + 1, last_opened_at = now() WHERE id = ${fila.id} AND (last_opened_at IS NULL OR last_opened_at < now() - interval '1 minute')`;
   const [hoyFila] = await sql`SELECT (now() AT TIME ZONE 'America/Panama')::date::text AS hoy`;
+  void notifyRoutineActivity({ ownerId: String(fila.owner_id), clientId: String(fila.client_id), routineId: String(fila.routine_id), completedOn: String(hoyFila.hoy), kind: 'viewed', clientName: String(fila.full_name), routineTitle: String(fila.title), runNumber: 1 });
   const hoy = String(hoyFila.hoy);
   const [hecha] = await sql`SELECT count(*)::int AS count, max(run_number)::int AS latest_run FROM routine_completions WHERE client_id = ${fila.client_id} AND routine_id = ${fila.routine_id} AND completed_on = ${hoy}::date AND completion_percent > 0`;
   // Las clases de su viaje que siguen por delante (o la de hoy): le dicen qué cuenta y cuándo.
