@@ -1,4 +1,4 @@
-const APP_VERSION = '346';
+const APP_VERSION = '347';
 const markPwaVersion = () => document.querySelectorAll('.topbar-actions').forEach(actions => {
   if (actions.querySelector('[data-pwa-version]')) return;
   const indicator = document.createElement('span');
@@ -7820,7 +7820,7 @@ function accountChangePassword() {
 }
 function renderAudit() {
   const root = document.getElementById('audit-root');
-  root.innerHTML = '<div class="section-heading"><p class="eyebrow">REGISTRO DE CAMBIOS</p></div><div class="toolbar"><select id="audit-type-filter" aria-label="Tipo"><option value="all">Todos</option><option value="access">Accesos</option><option value="destructive">Borrados</option><option value="billing">Facturación</option></select><input id="audit-email-filter" type="search" placeholder="Filtrar por correo…" /><input id="audit-since-filter" type="date" /></div><div id="audit-table-wrap" class="table-wrap"><p class="empty">Cargando…</p></div>';
+  root.innerHTML = '<div class="section-heading"><p class="eyebrow">REGISTRO DE CAMBIOS</p></div><div class="toolbar"><select id="audit-type-filter" aria-label="Tipo"><option value="all">Todos</option><option value="access">Accesos</option><option value="destructive">Borrados</option><option value="billing">Facturación</option><option value="routine">Rutinas</option></select><input id="audit-email-filter" type="search" placeholder="Filtrar por correo…" /><input id="audit-since-filter" type="date" /></div><div id="audit-table-wrap" class="table-wrap"><p class="empty">Cargando…</p></div>';
   const typeFilter = root.querySelector('#audit-type-filter');
   const emailFilter = root.querySelector('#audit-email-filter');
   const sinceFilter = root.querySelector('#audit-since-filter');
@@ -7835,7 +7835,7 @@ function renderAudit() {
     if (since) filtered = filtered.filter(e => e._at >= since);
     const wrap = root.querySelector('#audit-table-wrap');
     if (!filtered.length) { wrap.innerHTML = '<p class="empty">Sin registros para estos filtros.</p>'; return; }
-    wrap.innerHTML = `<table class="stack-mobile"><thead><tr><th>Fecha</th><th>Tipo</th><th>Usuario</th><th>Acción</th><th>Detalle</th></tr></thead><tbody>${filtered.slice(0, 200).map(e => `<tr><td>${fechaHoraPanama(e._at)}</td><td><span class="badge badge-${e._source}">${e._source === 'access' ? 'Acceso' : e._source === 'destructive' ? 'Borrado' : 'Facturación'}</span></td><td>${escapeHtml(e.email || e.user_email || '—')}</td><td>${escapeHtml(e._action)}</td><td class="audit-detail">${escapeHtml(e._detail)}</td></tr>`).join('')}</tbody></table>`;
+    wrap.innerHTML = `<table class="stack-mobile"><thead><tr><th>Fecha</th><th>Tipo</th><th>Usuario</th><th>Acción</th><th>Detalle</th></tr></thead><tbody>${filtered.slice(0, 200).map(e => `<tr><td>${fechaHoraPanama(e._at)}</td><td><span class="badge badge-${e._source}">${e._source === 'access' ? 'Acceso' : e._source === 'destructive' ? 'Cambio' : e._source === 'routine' ? 'Rutina' : 'Facturación'}</span></td><td>${escapeHtml(e.email || e.user_email || '—')}</td><td>${escapeHtml(e._action)}</td><td class="audit-detail">${escapeHtml(e._detail)}</td></tr>`).join('')}</tbody></table>`;
   };
   typeFilter.onchange = renderTable; emailFilter.oninput = renderTable; sinceFilter.onchange = renderTable;
   Promise.all([
@@ -7847,22 +7847,42 @@ function renderAudit() {
     for (const a of attempts) entries.push({ _source: 'access', _at: a.created_at, email: a.email, _action: a.succeeded ? 'Login exitoso' : 'Login fallido', _detail: `desde ${a.ip || '?'}` });
     const auditActionLabel = { DELETE: 'Eliminó', PATCH: 'Actualizó', POST: 'Creó', PUT: 'Actualizó',
       CREATE_BILLING_SUBSCRIPTION: 'Creó suscripción', UPDATE_BILLING_SUBSCRIPTION: 'Actualizó suscripción', CLOSE_BILLING_SUBSCRIPTION: 'Cerró suscripción',
-      REPLACE_BILLING_SUBSCRIPTION: 'Reemplazó suscripción', CORRECT_BILLING_SUBSCRIPTION_PRICE: 'Corrigió monto de suscripción' };
+      REPLACE_BILLING_SUBSCRIPTION: 'Reemplazó suscripción', CORRECT_BILLING_SUBSCRIPTION_PRICE: 'Corrigió monto de suscripción',
+      UPDATE_CLIENT_MONTHLY_AMOUNT: 'Cambió monto mensual',
+      'routine_delivery.send': 'Envió rutina', 'routine_delivery.retract': 'Retiró rutina',
+      'routine.completed': 'Completó rutina', 'routine.completed_by_admin': 'Completó rutina (admin)',
+      CORRECT_ROUTINE_DURATION: 'Corrigió duración de rutina' };
     const auditRouteLabel = { '/api/sessions/:id': 'sesión', '/api/clients/:id': 'cliente', '/api/routines/:id': 'rutina',
       '/api/billing-subscriptions/:id': 'suscripción', '/api/clients/:id/billing-subscriptions': 'suscripción', '/api/invoices/:id': 'factura' };
     const extractName = d => d?.next?.beneficiaryName || d?.next?.payerName || d?.previous?.beneficiaryName || d?.clientName || d?.full_name || d?.name || null;
     for (const a of (Array.isArray(auditLog) ? auditLog : [])) {
       const d = typeof a.detail === 'string' ? (() => { try { return JSON.parse(a.detail); } catch { return null; } })() : (a.detail || null);
       const verb = auditActionLabel[a.action] || a.action;
-      const entity = auditRouteLabel[a.route] || a.route?.split('/').pop()?.replace(/:id$/, '') || '';
-      const nombre = extractName(d) || a.target_name || null;
-      const action = nombre ? `${verb} ${entity} de ${nombre}` : `${verb} ${entity}`;
+      const isRoutine = a.action?.startsWith('routine');
+      const entity = isRoutine ? '' : (auditRouteLabel[a.route] || a.route?.split('/').pop()?.replace(/:id$/, '') || '');
+      const nombre = isRoutine ? (d?.clientName || null) : (extractName(d) || a.target_name || null);
+      let action;
+      if (isRoutine) {
+        const titulo = d?.routineTitle || '';
+        action = nombre && titulo ? `${verb} "${titulo}" · ${nombre}` : nombre ? `${verb} · ${nombre}` : titulo ? `${verb} "${titulo}"` : verb;
+      } else {
+        action = nombre ? `${verb} ${entity} de ${nombre}` : `${verb} ${entity}`;
+      }
       const detailParts = [];
-      if (d?.next?.price != null) detailParts.push(`$${Number(d.next.price).toFixed(2)}`);
-      if (d?.next?.startsOn) detailParts.push(`desde ${billingDateText(d.next.startsOn)}`);
-      if (d?.next?.endsOn) detailParts.push(`hasta ${billingDateText(d.next.endsOn)}`);
-      if (d?.previous?.price != null && d?.next?.price != null && d.previous.price !== d.next.price) detailParts.unshift(`$${Number(d.previous.price).toFixed(2)} → $${Number(d.next.price).toFixed(2)}`);
-      entries.push({ _source: 'destructive', _at: a.created_at, user_email: a.user_email, _action: action, _detail: detailParts.length ? detailParts.join(' · ') : '' });
+      if (isRoutine) {
+        if (d?.exerciseCount != null) detailParts.push(`${d.exerciseCount} ejercicio${d.exerciseCount > 1 ? 's' : ''}`);
+        if (d?.exercises != null) detailParts.push(`${d.exercises} ejercicio${d.exercises > 1 ? 's' : ''}`);
+        if (d?.kind) detailParts.push(d.kind);
+        if (d?.elapsedSeconds != null) { const m = Math.round(d.elapsedSeconds / 60); detailParts.push(`${m} min`); }
+        if (d?.countsAsClass) detailParts.push('cuenta como clase');
+        if (d?.completedOn) detailParts.push(billingDateText(d.completedOn));
+      } else {
+        if (d?.next?.price != null) detailParts.push(`$${Number(d.next.price).toFixed(2)}`);
+        if (d?.next?.startsOn) detailParts.push(`desde ${billingDateText(d.next.startsOn)}`);
+        if (d?.next?.endsOn) detailParts.push(`hasta ${billingDateText(d.next.endsOn)}`);
+        if (d?.previous?.price != null && d?.next?.price != null && d.previous.price !== d.next.price) detailParts.unshift(`$${Number(d.previous.price).toFixed(2)} → $${Number(d.next.price).toFixed(2)}`);
+      }
+      entries.push({ _source: isRoutine ? 'routine' : 'destructive', _at: a.created_at, user_email: a.user_email, _action: action, _detail: detailParts.length ? detailParts.join(' · ') : '' });
     }
     const bEntries = billingAudit.entries || billingAudit;
     const billingActionLabel = { CREATE_INVOICE: 'Creó factura', VOID_INVOICE: 'Anuló factura', CREATE_PAYMENT: 'Registró pago', VOID_PAYMENT: 'Anuló pago',

@@ -4683,6 +4683,10 @@ async function recordRoutineDelivery(transaction: TransactionSql, input: {
       ${summary}, ${transaction.json(exercises)}, ${Boolean(input.repeatConfirmed)}
     ) RETURNING *
   `;
+  await transaction`
+    INSERT INTO audit_log (user_id, user_email, action, route, target_id, detail, ip)
+    VALUES (${input.sentByUserId}, NULL, 'routine_delivery.send', '/api/routines/deliver', ${delivery.id},
+      ${transaction.json({ routineTitle: input.routine.title, clientName: client.full_name, kind: input.kind, exerciseCount: exercises.length })}, NULL)`;
   return delivery;
 }
 
@@ -5241,7 +5245,7 @@ app.post('/api/routines/complete-pending', { preHandler: requireStaff }, async (
   const { timerSessionId } = z.object({ timerSessionId: z.string().uuid() }).parse(request.body);
   const result = await sql.begin(async transaction => {
     const [timer] = await transaction`
-      SELECT ts.*, c.owner_id, r.exercises, ra.id AS assignment_id
+      SELECT ts.*, c.owner_id, c.full_name AS client_name, r.exercises, r.title AS routine_title, ra.id AS assignment_id
       FROM routine_timer_sessions ts
       JOIN clients c ON c.id = ts.client_id
       JOIN routines r ON r.id = ts.routine_id
@@ -5272,6 +5276,9 @@ app.post('/api/routines/complete-pending', { preHandler: requireStaff }, async (
         marked_by_user_id = EXCLUDED.marked_by_user_id, updated_at = now()
       RETURNING *
     `;
+    await transaction`INSERT INTO audit_log (user_id, user_email, action, route, target_id, detail, ip)
+      VALUES (${auth.sub}, ${auth.email || null}, 'routine.completed_by_admin', '/api/routines/complete-pending', ${timer.routine_id},
+        ${transaction.json({ clientName: timer.client_name, routineTitle: timer.routine_title, completedOn: String(timer.completed_on).slice(0, 10), elapsedSeconds: timer.elapsed_seconds, exercises: totalExercises })}, ${request.ip || null})`;
     return { completed: true, routineId: timer.routine_id, clientId: timer.client_id, completedOn: timer.completed_on, elapsedSeconds: timer.elapsed_seconds };
   });
   if (!result) return reply.code(404).send({ error: 'Sesión de cronómetro no encontrada o ya completada' });
@@ -10143,7 +10150,12 @@ app.post('/api/portal/routine-exercise-completions', { preHandler: requireAuth }
   if (!result) return reply.code(404).send({ error: 'La rutina no está asignada a este cliente' });
   if (result.routineCompleted) {
     const [routine] = await sql`SELECT r.title, c.full_name, c.owner_id, c.service_mode FROM routine_assignments ra JOIN routines r ON r.id = ra.routine_id JOIN clients c ON c.id = ra.client_id WHERE ra.routine_id = ${input.routineId} AND ra.client_id = ${client.id} AND ra.active = true`;
-    if (routine) await notifyRoutineActivity({ ownerId: routine.owner_id, clientId: client.id, routineId: input.routineId, completedOn: result.completedOn, runNumber: result.runNumber, kind: 'completed', clientName: routine.full_name, routineTitle: routine.title, elapsedSeconds: input.elapsedSeconds, completedCount: result.completedCount, totalExercises: result.totalExercises, feeling: result.completion.feeling, difficulty: result.completion.difficulty, feedback: result.completion.feedback, countsAsClass: Boolean(result.sessionCompleted), demo: routine.service_mode === 'demo' });
+    if (routine) {
+      await notifyRoutineActivity({ ownerId: routine.owner_id, clientId: client.id, routineId: input.routineId, completedOn: result.completedOn, runNumber: result.runNumber, kind: 'completed', clientName: routine.full_name, routineTitle: routine.title, elapsedSeconds: input.elapsedSeconds, completedCount: result.completedCount, totalExercises: result.totalExercises, feeling: result.completion.feeling, difficulty: result.completion.difficulty, feedback: result.completion.feedback, countsAsClass: Boolean(result.sessionCompleted), demo: routine.service_mode === 'demo' });
+      await sql`INSERT INTO audit_log (user_id, user_email, action, route, target_id, detail, ip)
+        VALUES (${auth.sub}, ${auth.email || null}, 'routine.completed', '/api/portal/routine-exercise-completions', ${input.routineId},
+          ${sql.json({ clientName: routine.full_name, routineTitle: routine.title, completedOn: result.completedOn, elapsedSeconds: input.elapsedSeconds, exercises: result.totalExercises, countsAsClass: Boolean(result.sessionCompleted) })}, ${request.ip || null})`;
+    }
   }
   return reply.code(201).send(result);
 });
