@@ -1,4 +1,4 @@
-const APP_VERSION = '344';
+const APP_VERSION = '345';
 const markPwaVersion = () => document.querySelectorAll('.topbar-actions').forEach(actions => {
   if (actions.querySelector('[data-pwa-version]')) return;
   const indicator = document.createElement('span');
@@ -7844,10 +7844,44 @@ function renderAudit() {
     api('/api/billing/audit?limit=200').catch(() => ({ entries: [] }))
   ]).then(([attempts, auditLog, billingAudit]) => {
     const entries = [];
-    for (const a of attempts) entries.push({ _source: 'access', _at: a.created_at, email: a.email, _action: a.succeeded ? 'Login exitoso' : 'Login fallido', _detail: `${a.endpoint} desde ${a.ip || '?'}` });
-    for (const a of (Array.isArray(auditLog) ? auditLog : [])) entries.push({ _source: 'destructive', _at: a.created_at, user_email: a.user_email, _action: `${a.action} ${a.route}`, _detail: a.target_id || '' });
+    for (const a of attempts) entries.push({ _source: 'access', _at: a.created_at, email: a.email, _action: a.succeeded ? 'Login exitoso' : 'Login fallido', _detail: `desde ${a.ip || '?'}` });
+    const auditActionLabel = { DELETE: 'Eliminó', PATCH: 'Actualizó', POST: 'Creó', PUT: 'Actualizó',
+      CREATE_BILLING_SUBSCRIPTION: 'Creó suscripción', UPDATE_BILLING_SUBSCRIPTION: 'Actualizó suscripción', CLOSE_BILLING_SUBSCRIPTION: 'Cerró suscripción',
+      REPLACE_BILLING_SUBSCRIPTION: 'Reemplazó suscripción', CORRECT_BILLING_SUBSCRIPTION_PRICE: 'Corrigió monto de suscripción' };
+    const auditRouteLabel = { '/api/sessions/:id': 'sesión', '/api/clients/:id': 'cliente', '/api/routines/:id': 'rutina',
+      '/api/billing-subscriptions/:id': 'suscripción', '/api/clients/:id/billing-subscriptions': 'suscripción', '/api/invoices/:id': 'factura' };
+    const extractName = d => d?.next?.beneficiaryName || d?.next?.payerName || d?.previous?.beneficiaryName || d?.clientName || d?.full_name || d?.name || null;
+    for (const a of (Array.isArray(auditLog) ? auditLog : [])) {
+      const d = typeof a.detail === 'string' ? (() => { try { return JSON.parse(a.detail); } catch { return null; } })() : (a.detail || null);
+      const verb = auditActionLabel[a.action] || a.action;
+      const entity = auditRouteLabel[a.route] || a.route?.split('/').pop()?.replace(/:id$/, '') || '';
+      const nombre = extractName(d) || a.target_name || null;
+      const action = nombre ? `${verb} ${entity} de ${nombre}` : `${verb} ${entity}`;
+      const detailParts = [];
+      if (d?.next?.price != null) detailParts.push(`$${Number(d.next.price).toFixed(2)}`);
+      if (d?.next?.startsOn) detailParts.push(`desde ${billingDateText(d.next.startsOn)}`);
+      if (d?.next?.endsOn) detailParts.push(`hasta ${billingDateText(d.next.endsOn)}`);
+      if (d?.previous?.price != null && d?.next?.price != null && d.previous.price !== d.next.price) detailParts.unshift(`$${Number(d.previous.price).toFixed(2)} → $${Number(d.next.price).toFixed(2)}`);
+      entries.push({ _source: 'destructive', _at: a.created_at, user_email: a.user_email, _action: action, _detail: detailParts.length ? detailParts.join(' · ') : '' });
+    }
     const bEntries = billingAudit.entries || billingAudit;
-    for (const a of (Array.isArray(bEntries) ? bEntries : [])) entries.push({ _source: 'billing', _at: a.at, user_email: a.user, _action: a.action, _detail: `${a.entity || ''} ${a.entityId || ''}` });
+    const billingActionLabel = { CREATE_INVOICE: 'Creó factura', VOID_INVOICE: 'Anuló factura', CREATE_PAYMENT: 'Registró pago', VOID_PAYMENT: 'Anuló pago',
+      APPLY_PAYMENT: 'Aplicó pago', REVERSE_APPLICATION: 'Reversó aplicación', REDISTRIBUTE_INVOICE: 'Redistribuyó factura',
+      CREATE_BILLING_SUBSCRIPTION: 'Creó suscripción', CLOSE_BILLING_SUBSCRIPTION: 'Cerró suscripción', UPDATE_BILLING_SUBSCRIPTION: 'Actualizó suscripción',
+      REPLACE_BILLING_SUBSCRIPTION: 'Reemplazó suscripción', CORRECT_BILLING_SUBSCRIPTION_PRICE: 'Corrigió monto' };
+    for (const a of (Array.isArray(bEntries) ? bEntries : [])) {
+      const d = typeof a.detail === 'string' ? (() => { try { return JSON.parse(a.detail); } catch { return null; } })() : (a.detail || null);
+      const verb = billingActionLabel[a.action] || a.action;
+      const code = d?.code || '';
+      const nombre = a.payerName || d?.payerName || extractName(d) || '';
+      const action = code ? `${verb} ${code}` : nombre ? `${verb} · ${nombre}` : verb;
+      const detailParts = [];
+      if (d?.total != null) detailParts.push(`$${Number(d.total).toFixed(2)}`);
+      if (d?.reason) detailParts.push(d.reason);
+      if (d?.lines) detailParts.push(`${d.lines} línea${d.lines > 1 ? 's' : ''}`);
+      if (nombre && code) detailParts.push(nombre);
+      entries.push({ _source: 'billing', _at: a.at, user_email: a.user, _action: action, _detail: detailParts.join(' · ') });
+    }
     entries.sort((a, b) => new Date(b._at) - new Date(a._at));
     allEntries = entries;
     renderTable();

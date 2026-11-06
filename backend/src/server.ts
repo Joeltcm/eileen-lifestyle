@@ -1772,9 +1772,12 @@ app.get('/api/billing/audit', { preHandler: requireStaff }, async request => {
   const auth = request.user as AuthUser;
   const { limit } = z.object({ limit: z.coerce.number().int().min(1).max(500).default(100) }).parse(request.query);
   const rows = await sql`
-    SELECT a.at, a.action, a.entity, a.entity_id::text AS entity_id, a.detail, u.email AS user_email
+    SELECT a.at, a.action, a.entity, a.entity_id::text AS entity_id, a.detail, u.email AS user_email,
+      CASE WHEN a.entity = 'invoice' THEN (SELECT p.full_name FROM billing_invoices bi JOIN clients p ON p.id = bi.payer_client_id WHERE bi.id::text = a.entity_id::text AND bi.owner_id = ${auth.sub} LIMIT 1)
+           WHEN a.entity = 'payment' THEN (SELECT p.full_name FROM billing_payments bp JOIN clients p ON p.id = bp.payer_client_id WHERE bp.id::text = a.entity_id::text AND bp.owner_id = ${auth.sub} LIMIT 1)
+      END AS payer_name
     FROM billing_audit a LEFT JOIN users u ON u.id = a.user_id WHERE a.owner_id = ${auth.sub} ORDER BY a.at DESC, a.id DESC LIMIT ${limit}`;
-  return { entries: rows.map(row => ({ at: row.at, action: row.action, entity: row.entity, entityId: row.entity_id, detail: row.detail, user: row.user_email ?? 'automático' })) };
+  return { entries: rows.map(row => ({ at: row.at, action: row.action, entity: row.entity, entityId: row.entity_id, detail: row.detail, user: row.user_email ?? 'automático', payerName: row.payer_name || null })) };
 });
 
 // Diagnóstico del estado operativo (solo lectura): permite comprobar desde fuera
@@ -1853,11 +1856,18 @@ app.addHook('onSend', async (request, reply, payload) => {
 });
 
 app.get('/api/audit-log', { preHandler: requireStaff }, async request => {
+  const auth = request.user as AuthUser;
   const consulta = z.object({ limit: z.coerce.number().int().min(1).max(200).default(60) }).parse(request.query);
-  return sql`
-    SELECT id, user_email, action, route, target_id, detail, created_at
-    FROM audit_log ORDER BY created_at DESC LIMIT ${consulta.limit}
+  const rows = await sql`
+    SELECT a.id, a.user_email, a.action, a.route, a.target_id, a.detail, a.created_at,
+      COALESCE(c.full_name, s_client.full_name) AS target_name
+    FROM audit_log a
+    LEFT JOIN clients c ON a.target_id IS NOT NULL AND a.route LIKE '%clients%' AND c.id::text = a.target_id AND c.owner_id = ${auth.sub}
+    LEFT JOIN sessions sess ON a.target_id IS NOT NULL AND a.route LIKE '%sessions%' AND sess.id::text = a.target_id
+    LEFT JOIN clients s_client ON sess.client_id = s_client.id AND s_client.owner_id = ${auth.sub}
+    ORDER BY a.created_at DESC LIMIT ${consulta.limit}
   `;
+  return rows;
 });
 
 app.get('/api/auth-attempts', { preHandler: async r => { await requireSuperadmin(r); } }, async request => {
