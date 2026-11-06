@@ -147,7 +147,7 @@ export async function planBillingGeneration(tx: Tx, ownerId: string, today = fec
   for (const lines of groups.values()) {
     const { payerId, payerName, kind, payerCutDay } = lines[0];
     const [last] = await tx`
-      SELECT id::text AS id, number, cycle_start::text AS cycle_start, cycle_end::text AS cycle_end FROM billing_invoices
+      SELECT id::text AS id, number, cycle_start::text AS cycle_start, cycle_end::text AS cycle_end, cut_day FROM billing_invoices
       WHERE owner_id = ${ownerId} AND payer_client_id = ${payerId} AND kind = ${kind} AND status <> 'anulada'
       ORDER BY cycle_start DESC, number DESC LIMIT 1`;
     const base = { payerId, payerName, kind, cutDay: payerCutDay };
@@ -157,6 +157,9 @@ export async function planBillingGeneration(tx: Tx, ownerId: string, today = fec
       continue;
     }
     let refEnd = last.cycle_end as string;
+    // CAMBIO DE DÍA DE CORTE: si Eileen modificó el corte en el expediente, el siguiente ciclo arranca en el nuevo día de corte, sin micro-ciclo puente.
+    const lastCutDay = Number(last.cut_day) || payerCutDay;
+    if (lastCutDay !== payerCutDay && kind !== 'paquete') refEnd = nextCutAfter(refEnd, payerCutDay);
     // PAUSA A MEDIO TÉRMINO (Joel, opción 2): el corte se corre tantos días como duró la pausa; el ciclo sigue donde se detuvo.
     // Solo para quien paga su propia mensualidad o paquete (la pausa de un beneficiario de familia solo retira su línea mientras dura).
     if (kind !== 'credito') refEnd = addDays(refEnd, await pauseShiftDays(tx, payerId, last.cycle_start as string, last.cycle_end as string));
