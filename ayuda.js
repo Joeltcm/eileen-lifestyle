@@ -74,6 +74,12 @@ const pwaGuide = {
 // Las correcciones pequeñas que nadie nota no necesitan entrada. Los nombres de pantallas y botones van entre «comillas angulares».
 const whatsNewReleases = [
   {
+    id: '2026-11-06-compuerta-iniciar-entrenamiento', version: 341, date: '06-11-2026', title: 'Iniciar entrenamiento obligatorio',
+    items: [
+      { icon: '🔒', title: 'Los ejercicios se desbloquean al iniciar', text: 'Ahora los ejercicios de la rutina aparecen bloqueados hasta que toques «Iniciar entrenamiento». Así nos aseguramos de registrar tu tiempo activo correctamente.' }
+    ]
+  },
+  {
     id: '2026-10-30-modificar-rutina-con-ia', version: 339, date: '30-10-2026', title: 'Modificar rutina con IA',
     items: [
       { icon: '✦', title: 'Pide cambios a la IA sobre una rutina ya armada', text: 'Cuando una rutina generada con IA necesita ajustes, pulsa «Modificar con IA» y describe qué quieres cambiar: reemplazar un ejercicio, agregar calentamiento, cambiar la estructura, etc. La IA devuelve la rutina modificada para que la revises antes de guardar. Hasta 10 modificaciones por sesión.' }
