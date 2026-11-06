@@ -1,4 +1,4 @@
-const APP_VERSION = '343';
+const APP_VERSION = '344';
 const markPwaVersion = () => document.querySelectorAll('.topbar-actions').forEach(actions => {
   if (actions.querySelector('[data-pwa-version]')) return;
   const indicator = document.createElement('span');
@@ -7897,9 +7897,11 @@ function renderDiagnostics() {
         <div style="display:flex;flex-wrap:wrap;gap:10px;margin-top:8px">
           <button class="primary" id="diag-trigger-billing">Generar facturación ahora</button>
           <button class="secondary" id="diag-show-candidates">Ver candidatos pendientes</button>
+          <button class="secondary" id="diag-show-pending-timers">Cronómetros pendientes</button>
           <button class="secondary" id="diag-reset-password">Restablecer contraseña</button>
         </div>
         <div id="diag-candidates" style="margin-top:12px"></div>
+        <div id="diag-pending-timers" style="margin-top:12px"></div>
         <div id="diag-reset-form" style="margin-top:12px" hidden></div>
       </article>`;
     root.querySelector('#diag-clear-blocks')?.addEventListener('click', async () => {
@@ -7929,6 +7931,20 @@ function renderDiagnostics() {
         } else {
           div.innerHTML = `<table class="stack-mobile"><thead><tr><th>Cliente</th><th>Monto</th><th>Vencimiento</th><th>Período</th></tr></thead><tbody>${candidates.map(c => `<tr><td>${escapeHtml(c.billed_for_name)}</td><td>$${Number(c.amount).toFixed(2)}</td><td>${c.due_on}</td><td>${c.billing_period}</td></tr>`).join('')}</tbody></table>`;
         }
+      } catch (err) { div.innerHTML = `<p class="form-error">${escapeHtml(err.message)}</p>`; }
+    });
+    root.querySelector('#diag-show-pending-timers')?.addEventListener('click', async () => {
+      const div = root.querySelector('#diag-pending-timers');
+      div.innerHTML = '<p class="empty">Cargando cronómetros…</p>';
+      try {
+        const timers = await api('/api/routines/pending-timers');
+        if (!timers.length) { div.innerHTML = '<p class="empty">No hay cronómetros pendientes.</p>'; return; }
+        const formatDuration = s => { const m = Math.floor(s / 60); const sec = s % 60; return `${m}m ${sec}s`; };
+        div.innerHTML = `<table class="stack-mobile"><thead><tr><th>Cliente</th><th>Rutina</th><th>Fecha</th><th>Tiempo</th><th>Ejercicios</th><th></th></tr></thead><tbody>${timers.map(t => `<tr><td>${escapeHtml(t.client_name)}</td><td>${escapeHtml(t.routine_title)}</td><td>${billingDateText(t.completed_on)}</td><td>${formatDuration(t.elapsed_seconds)}</td><td>${t.exercises_done || 0}/${t.total_exercises || '?'}</td><td><button class="primary small" data-complete-timer="${t.id}">Completar</button></td></tr>`).join('')}</tbody></table>`;
+        div.querySelectorAll('[data-complete-timer]').forEach(btn => btn.onclick = async () => {
+          if (!confirm('¿Completar esta rutina con el tiempo registrado?')) return;
+          try { await api('/api/routines/complete-pending', { method: 'POST', body: { timerSessionId: btn.dataset.completeTimer } }); toast('Rutina completada'); root.querySelector('#diag-show-pending-timers').click(); } catch (err) { toast(err.message, true); }
+        });
       } catch (err) { div.innerHTML = `<p class="form-error">${escapeHtml(err.message)}</p>`; }
     });
     root.querySelector('#diag-reset-password')?.addEventListener('click', async () => {

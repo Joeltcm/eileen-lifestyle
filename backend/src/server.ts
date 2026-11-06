@@ -5204,6 +5204,68 @@ app.delete('/api/routines/:id', { preHandler: requireStaff }, async (request, re
   return result;
 });
 
+// ── Rutinas pendientes (admin) ───────────────────────────────────────────
+app.get('/api/routines/pending-timers', { preHandler: requireStaff }, async request => {
+  const auth = request.user as AuthUser;
+  return sql`
+    SELECT ts.id::text, ts.routine_id::text, ts.client_id::text, c.full_name AS client_name,
+      r.title AS routine_title, ts.completed_on, ts.run_number, ts.started_at, ts.elapsed_seconds,
+      ts.active, ts.paused_at, ts.completed_at,
+      (SELECT rc.completion_percent FROM routine_completions rc
+        WHERE rc.routine_id = ts.routine_id AND rc.client_id = ts.client_id AND rc.completed_on = ts.completed_on AND rc.run_number = ts.run_number) AS completion_percent,
+      (SELECT count(*)::int FROM routine_exercise_completions rec
+        WHERE rec.routine_id = ts.routine_id AND rec.client_id = ts.client_id AND rec.completed_on = ts.completed_on AND rec.run_number = ts.run_number AND rec.completed = true) AS exercises_done,
+      (SELECT jsonb_array_length(rr.exercises) FROM routines rr WHERE rr.id = ts.routine_id) AS total_exercises
+    FROM routine_timer_sessions ts
+    JOIN clients c ON c.id = ts.client_id AND c.owner_id = ${auth.sub}
+    JOIN routines r ON r.id = ts.routine_id
+    WHERE ts.completed_at IS NULL
+    ORDER BY ts.started_at DESC
+  `;
+});
+
+app.post('/api/routines/complete-pending', { preHandler: requireStaff }, async (request, reply) => {
+  const auth = request.user as AuthUser;
+  const { timerSessionId } = z.object({ timerSessionId: z.string().uuid() }).parse(request.body);
+  const result = await sql.begin(async transaction => {
+    const [timer] = await transaction`
+      SELECT ts.*, c.owner_id, r.exercises, ra.id AS assignment_id
+      FROM routine_timer_sessions ts
+      JOIN clients c ON c.id = ts.client_id
+      JOIN routines r ON r.id = ts.routine_id
+      LEFT JOIN routine_assignments ra ON ra.routine_id = ts.routine_id AND ra.client_id = ts.client_id AND ra.active = true
+      WHERE ts.id = ${timerSessionId} AND c.owner_id = ${auth.sub} AND ts.completed_at IS NULL
+      FOR UPDATE OF ts
+    `;
+    if (!timer) return null;
+    const ejercicios = Array.isArray(timer.exercises) ? timer.exercises : [];
+    const totalExercises = ejercicios.length;
+    await transaction`
+      INSERT INTO routine_exercise_completions (routine_id, client_id, completed_on, run_number, exercise_index, completed, completed_at)
+      SELECT ${timer.routine_id}, ${timer.client_id}, ${timer.completed_on}, ${timer.run_number}, indexes, true, now()
+      FROM generate_series(0, ${totalExercises - 1}) AS indexes
+      ON CONFLICT (routine_id, client_id, completed_on, run_number, exercise_index)
+      DO UPDATE SET completed = true, completed_at = COALESCE(routine_exercise_completions.completed_at, now()), updated_at = now()
+    `;
+    await transaction`
+      UPDATE routine_timer_sessions SET active = false, completed_at = now(), updated_at = now()
+      WHERE id = ${timerSessionId}
+    `;
+    await transaction`
+      INSERT INTO routine_completions (routine_id, client_id, completed_on, run_number, completion_percent, completed_at, assignment_id, elapsed_seconds, duration_seconds, marked_by_user_id)
+      VALUES (${timer.routine_id}, ${timer.client_id}, ${timer.completed_on}, ${timer.run_number}, 100, now(), ${timer.assignment_id}, ${timer.elapsed_seconds}, ${timer.elapsed_seconds}, ${auth.sub})
+      ON CONFLICT (routine_id, client_id, completed_on, run_number) DO UPDATE SET
+        completion_percent = 100, completed_at = COALESCE(routine_completions.completed_at, now()),
+        elapsed_seconds = EXCLUDED.elapsed_seconds, duration_seconds = EXCLUDED.duration_seconds,
+        marked_by_user_id = EXCLUDED.marked_by_user_id, updated_at = now()
+      RETURNING *
+    `;
+    return { completed: true, routineId: timer.routine_id, clientId: timer.client_id, completedOn: timer.completed_on, elapsedSeconds: timer.elapsed_seconds };
+  });
+  if (!result) return reply.code(404).send({ error: 'Sesión de cronómetro no encontrada o ya completada' });
+  return reply.code(200).send(result);
+});
+
 // ── Catálogo de ejercicios ────────────────────────────────────────────────
 const exerciseSections = ['tren_inferior', 'tren_superior', 'core', 'cardio', 'hit'] as const;
 const videoContentTypes = ['video/mp4', 'video/webm'] as const;
@@ -11479,7 +11541,23 @@ const alertaRitmoInterval = setInterval(() => checkRoutinePaceAlerts().catch(err
 primeraAlertaRitmo.unref();
 alertaRitmoInterval.unref();
 
+// Auto-cierre de cronómetros huérfanos: si un cliente inició el cronómetro pero no completó la rutina,
+// después de 4 horas se cierra automáticamente con el último elapsed_seconds registrado.
+async function cerrarTimersHuerfanos() {
+  const stale = await sql`
+    UPDATE routine_timer_sessions SET active = false, completed_at = now(), updated_at = now()
+    WHERE active = true AND completed_at IS NULL
+      AND started_at < now() - interval '4 hours'
+    RETURNING id, routine_id, client_id, completed_on, run_number, elapsed_seconds
+  `;
+  if (stale.length) app.log.info({ count: stale.length, ids: stale.map(s => s.id) }, 'Cronómetros huérfanos cerrados automáticamente');
+  return stale.length;
+}
+const timersHuerfanosInterval = setInterval(() => cerrarTimersHuerfanos().catch(error => app.log.error(error, 'cerrarTimersHuerfanos falló')), 60 * 60_000);
+timersHuerfanosInterval.unref();
+
 app.addHook('onClose', async () => {
+  clearInterval(timersHuerfanosInterval);
   clearTimeout(firstReminderRun);
   clearInterval(reminderInterval);
   clearTimeout(firstBillingRun);
