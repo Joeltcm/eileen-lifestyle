@@ -74,6 +74,13 @@ const pwaGuide = {
 // Las correcciones pequeñas que nadie nota no necesitan entrada. Los nombres de pantallas y botones van entre «comillas angulares».
 const whatsNewReleases = [
   {
+    id: '2026-11-06-seguridad-ia-auditoria', version: 352, date: '06-11-2026', title: 'Seguridad y protección de IA',
+    items: [
+      { icon: '🔐', title: 'Auditoría restringida', text: 'El registro de auditoría ahora solo es visible para el administrador principal, protegiendo la privacidad de las acciones registradas.' },
+      { icon: '🤖', title: 'Límite diario de IA reforzado', text: 'El límite de 30 sugerencias con IA por día ahora aplica a todas las formas de modificación y se reinicia a medianoche hora de Panamá.' }
+    ]
+  },
+  {
     id: '2026-11-06-compuerta-iniciar-entrenamiento', version: 341, date: '06-11-2026', title: 'Iniciar entrenamiento obligatorio',
     items: [
       { icon: '🔒', title: 'Los ejercicios se desbloquean al iniciar', text: 'Ahora los ejercicios de la rutina aparecen bloqueados hasta que toques «Iniciar entrenamiento». Así nos aseguramos de registrar tu tiempo activo correctamente.' }

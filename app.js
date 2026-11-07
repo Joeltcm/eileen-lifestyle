@@ -1,4 +1,4 @@
-const APP_VERSION = '351';
+const APP_VERSION = '352';
 const markPwaVersion = () => document.querySelectorAll('.topbar-actions').forEach(actions => {
   if (actions.querySelector('[data-pwa-version]')) return;
   const indicator = document.createElement('span');
@@ -3530,7 +3530,8 @@ function newRoutine(routine = null, duplicate = false, propuesta = null) {
             clientId: clientSelect.value || undefined,
             existingExercises: selectedExercises.map(e => ({ name: e.name, sets: e.sets, reps: e.reps, notes: e.notes, block: e.block, rounds: e.rounds })),
             existingTitle: formularioRutina.querySelector('[name="title"]').value || undefined,
-            existingDescription: formularioRutina.querySelector('[name="description"]')?.value || undefined
+            existingDescription: formularioRutina.querySelector('[name="description"]')?.value || undefined,
+            existingSessionsPerWeek: Number(formularioRutina.querySelector('[name="sessionsPerWeek"]')?.value) || undefined
           } });
         }
         intentosModificacion++;

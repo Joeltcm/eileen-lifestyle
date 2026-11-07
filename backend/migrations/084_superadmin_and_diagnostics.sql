@@ -3,14 +3,9 @@ ALTER TABLE users DROP CONSTRAINT IF EXISTS users_role_check;
 ALTER TABLE users ADD CONSTRAINT users_role_check
   CHECK (role IN ('admin', 'trainer', 'client', 'superadmin'));
 
--- Paso 2: Crear o promover la cuenta de Joel a superadmin
-INSERT INTO users (email, password_hash, full_name, role)
-VALUES (
-  'joelbmx22@gmail.com',
-  '$2b$12$ymbxB5rRrHmc/0oon3Pg0OpOLsgH/qLZaeOUWimTW6Q3bjEHB0Eie',
-  'Joel',
-  'superadmin'
-) ON CONFLICT (email) DO UPDATE SET role = 'superadmin', updated_at = now();
+-- Paso 2: Promover la cuenta de Joel a superadmin (solo si ya existe)
+UPDATE users SET role = 'superadmin', updated_at = now()
+WHERE email = 'joelbmx22@gmail.com';
 
 -- Paso 3: Tabla de historial de ejecuciones de facturación automática
 CREATE TABLE IF NOT EXISTS billing_runs (

@@ -1857,7 +1857,7 @@ app.addHook('onSend', async (request, reply, payload) => {
   return payload;
 });
 
-app.get('/api/audit-log', { preHandler: requireStaff }, async request => {
+app.get('/api/audit-log', { preHandler: requireSuperadmin }, async request => {
   const auth = request.user as AuthUser;
   const consulta = z.object({ limit: z.coerce.number().int().min(1).max(200).default(60) }).parse(request.query);
   const rows = await sql`
@@ -2723,7 +2723,7 @@ app.post('/api/account-settings/hero-photo', { preHandler: requireStaff }, async
   if (body.length > 3_000_000) return reply.code(400).send({ error: 'La imagen no puede superar 3 MB' });
   const magicOk = (contentType === 'image/jpeg' && body[0] === 0xFF && body[1] === 0xD8 && body[2] === 0xFF)
     || (contentType === 'image/png' && body[0] === 0x89 && body[1] === 0x50 && body[2] === 0x4E && body[3] === 0x47)
-    || (contentType === 'image/webp' && body[0] === 0x52 && body[1] === 0x49 && body[2] === 0x46 && body[3] === 0x46);
+    || (contentType === 'image/webp' && body[0] === 0x52 && body[1] === 0x49 && body[2] === 0x46 && body[3] === 0x46 && body[8] === 0x57 && body[9] === 0x45 && body[10] === 0x42 && body[11] === 0x50);
   if (!magicOk) return reply.code(400).send({ error: 'El archivo no es una imagen válida del tipo declarado' });
   const ext = contentType === 'image/jpeg' ? 'jpg' : contentType === 'image/png' ? 'png' : 'webp';
   const objectKey = `hero-photos/${auth.sub}/${randomUUID()}.${ext}`;
@@ -4879,7 +4879,8 @@ const routineSuggestionSchema = z.object({
     block: z.coerce.number().optional(), rounds: z.coerce.number().optional()
   })).optional(),
   existingTitle: z.string().max(120).optional(),
-  existingDescription: z.string().max(2000).optional()
+  existingDescription: z.string().max(2000).optional(),
+  existingSessionsPerWeek: z.coerce.number().int().min(1).max(7).optional()
 });
 
 // Los pesos que este cliente ya manejó, por ejercicio. Salen de sus rutinas
@@ -4923,7 +4924,7 @@ app.post('/api/routines/suggest', { preHandler: requireStaff }, async (request, 
   const input = routineSuggestionSchema.parse(request.body);
 
   const [{ count: aiCallsToday }] = await sql`SELECT count(*)::int AS count FROM audit_log
-    WHERE user_id = ${auth.sub} AND action = 'routine_ai_suggestion' AND created_at > now() - interval '24 hours'`;
+    WHERE user_id = ${auth.sub} AND action = 'routine_ai_suggestion' AND created_at::date = (now() AT TIME ZONE 'America/Panama')::date`;
   if (aiCallsToday >= 30) return reply.code(429).send({ error: 'Límite de 30 sugerencias con IA por día alcanzado. Intenta mañana.' });
 
   const catalogo = await sql`
@@ -4976,6 +4977,7 @@ app.post('/api/routines/suggest', { preHandler: requireStaff }, async (request, 
         ejerciciosActuales: input.existingExercises as Array<{ name: string; sets?: number; reps?: string; notes?: string; block?: number; rounds?: number }>,
         tituloActual: input.existingTitle || 'Rutina',
         descripcionActual: input.existingDescription || undefined,
+        sessionsPerWeekActual: input.existingSessionsPerWeek,
         instruccion: input.description,
         catalogo: catalogoMapeado,
         condiciones
@@ -4992,9 +4994,9 @@ app.post('/api/routines/suggest', { preHandler: requireStaff }, async (request, 
         duracionMinutos: input.durationMinutes
       });
     }
-    sql`INSERT INTO audit_log (user_id, user_email, action, route, detail)
+    await sql`INSERT INTO audit_log (user_id, user_email, action, route, detail)
       VALUES (${auth.sub}, ${auth.email || null}, 'routine_ai_suggestion', '/api/routines/suggest',
-        ${JSON.stringify({ mode: input.existingExercises?.length ? 'modify' : 'suggest', clientId: input.clientId || null })})`.catch(() => {});
+        ${JSON.stringify({ mode: input.existingExercises?.length ? 'modify' : 'suggest', clientId: input.clientId || null })})`;
     return propuesta;
   } catch (error) {
     app.log.warn({ err: error, ownerId: auth.sub }, 'No se pudo proponer una rutina');
@@ -5007,10 +5009,15 @@ const routineModifySchema = z.object({ instruction: z.string().trim().min(5).max
 app.post('/api/routines/:id/modify', { preHandler: requireStaff }, async (request, reply) => {
   const auth = request.user as AuthUser;
   if (!routineSuggestionsReady) return reply.code(503).send({ error: 'La propuesta con IA todavía no está configurada' });
+
+  const [{ count: aiCallsToday2 }] = await sql`SELECT count(*)::int AS count FROM audit_log
+    WHERE user_id = ${auth.sub} AND action = 'routine_ai_suggestion' AND created_at::date = (now() AT TIME ZONE 'America/Panama')::date`;
+  if (aiCallsToday2 >= 30) return reply.code(429).send({ error: 'Límite de 30 sugerencias con IA por día alcanzado. Intenta mañana.' });
+
   const id = z.string().uuid().parse((request.params as { id: string }).id);
   const input = routineModifySchema.parse(request.body);
 
-  const [rutina] = await sql`SELECT id, title, description, exercises FROM routines WHERE id = ${id} AND owner_id = ${auth.sub} AND NOT archived`;
+  const [rutina] = await sql`SELECT id, title, description, sessions_per_week, exercises FROM routines WHERE id = ${id} AND owner_id = ${auth.sub} AND NOT archived`;
   if (!rutina) return reply.code(404).send({ error: 'Rutina no encontrada' });
 
   const catalogo = await sql`SELECT name, section, level, machine, free_weight FROM exercises WHERE owner_id = ${auth.sub} AND NOT archived ORDER BY section, name`;
@@ -5032,10 +5039,14 @@ app.post('/api/routines/:id/modify', { preHandler: requireStaff }, async (reques
       ejerciciosActuales,
       tituloActual: String(rutina.title),
       descripcionActual: rutina.description ? String(rutina.description) : undefined,
+      sessionsPerWeekActual: Number(rutina.sessions_per_week) || undefined,
       instruccion: input.instruction,
       catalogo: catalogo.map(e => ({ name: String(e.name), section: String(e.section), level: e.level as string, machine: e.machine as string, freeWeight: e.free_weight as string })),
       condiciones
     });
+    await sql`INSERT INTO audit_log (user_id, user_email, action, route, detail)
+      VALUES (${auth.sub}, ${auth.email || null}, 'routine_ai_suggestion', ${'/api/routines/' + id + '/modify'},
+        ${JSON.stringify({ mode: 'modify-existing', routineId: id })})`;
     return propuesta;
   } catch (error) {
     app.log.warn({ err: error, ownerId: auth.sub }, 'No se pudo modificar la rutina con IA');

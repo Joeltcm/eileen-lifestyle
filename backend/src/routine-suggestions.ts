@@ -28,6 +28,20 @@ const textoSeguro = (value: unknown, fallback: string, max = 500) => {
   return texto || fallback;
 };
 
+export function parseRoutineDescription(desc?: string): { objective?: string; warmup?: string; cooldown?: string; stretching?: string } {
+  if (!desc) return {};
+  const secciones: Record<string, string> = {};
+  const bloques = desc.split(/\n{2,}/);
+  for (const bloque of bloques) {
+    const lower = bloque.toLowerCase();
+    if (lower.startsWith('objetivo')) secciones.objective = bloque.replace(/^OBJETIVO\n?/i, '').trim();
+    else if (lower.startsWith('calentamiento')) secciones.warmup = bloque.replace(/^CALENTAMIENTO[^\n]*\n?/i, '').trim();
+    else if (lower.startsWith('vuelta a la calma')) secciones.cooldown = bloque.replace(/^VUELTA A LA CALMA[^\n]*\n?/i, '').trim();
+    else if (lower.startsWith('estiramientos')) secciones.stretching = bloque.replace(/^ESTIRAMIENTOS[^\n]*\n?/i, '').trim();
+  }
+  return secciones;
+}
+
 export function formatRoutineDescription(partes: { objective?: unknown; warmup?: unknown; cooldown?: unknown; stretching?: unknown }) {
   return [
     `OBJETIVO\n${textoSeguro(partes.objective, 'Entrenamiento personalizado según la indicación de la entrenadora.')}`,
@@ -348,6 +362,7 @@ export async function modifyRoutine(entrada: {
   ejerciciosActuales: Array<{ name: string; sets?: number; reps?: string; notes?: string; block?: number; rounds?: number }>;
   tituloActual: string;
   descripcionActual?: string;
+  sessionsPerWeekActual?: number;
   instruccion: string;
   catalogo: CatalogEntry[];
   condiciones: string[];
@@ -451,11 +466,15 @@ export async function modifyRoutine(entrada: {
   const peticion = leerPeticion(entrada.instruccion);
   const ajuste = aplicarPeticion(ejercicios, peticion);
 
-  const semanales = Number(cruda.sessionsPerWeek);
+  const originalParts = parseRoutineDescription(entrada.descripcionActual);
+  const warmup = String(cruda.warmup ?? '').trim() || originalParts.warmup;
+  const cooldown = String(cruda.cooldown ?? '').trim() || originalParts.cooldown;
+  const stretching = String(cruda.stretching ?? '').trim() || originalParts.stretching;
+
   return {
     title: String(cruda.title ?? '').trim().slice(0, 120) || entrada.tituloActual,
-    description: formatRoutineDescription({ objective: cruda.description, warmup: cruda.warmup, cooldown: cruda.cooldown, stretching: cruda.stretching }),
-    sessionsPerWeek: Number.isFinite(semanales) && semanales >= 1 && semanales <= 7 ? Math.round(semanales) : 3,
+    description: formatRoutineDescription({ objective: cruda.description, warmup, cooldown, stretching }),
+    sessionsPerWeek: entrada.sessionsPerWeekActual ?? 3,
     exercises: ejercicios,
     rationale: [String(cruda.rationale ?? '').trim().slice(0, 500), ...ajuste.notas, `Duración estimada: unos ${ajuste.minutos} minutos.`].filter(Boolean).join(' '),
     estimatedMinutes: ajuste.minutos,
