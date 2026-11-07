@@ -467,13 +467,14 @@ export async function modifyRoutine(entrada: {
   const ajuste = aplicarPeticion(ejercicios, peticion);
 
   const originalParts = parseRoutineDescription(entrada.descripcionActual);
+  const objective = String(cruda.description ?? '').trim() || originalParts.objective;
   const warmup = String(cruda.warmup ?? '').trim() || originalParts.warmup;
   const cooldown = String(cruda.cooldown ?? '').trim() || originalParts.cooldown;
   const stretching = String(cruda.stretching ?? '').trim() || originalParts.stretching;
 
   return {
     title: String(cruda.title ?? '').trim().slice(0, 120) || entrada.tituloActual,
-    description: formatRoutineDescription({ objective: cruda.description, warmup, cooldown, stretching }),
+    description: formatRoutineDescription({ objective, warmup, cooldown, stretching }),
     sessionsPerWeek: entrada.sessionsPerWeekActual ?? 3,
     exercises: ejercicios,
     rationale: [String(cruda.rationale ?? '').trim().slice(0, 500), ...ajuste.notas, `Duración estimada: unos ${ajuste.minutos} minutos.`].filter(Boolean).join(' '),

@@ -4923,15 +4923,25 @@ app.post('/api/routines/suggest', { preHandler: requireStaff }, async (request, 
   if (!routineSuggestionsReady) return reply.code(503).send({ error: 'La propuesta con IA todavía no está configurada' });
   const input = routineSuggestionSchema.parse(request.body);
 
-  const [{ count: aiCallsToday }] = await sql`SELECT count(*)::int AS count FROM audit_log
-    WHERE user_id = ${auth.sub} AND action = 'routine_ai_suggestion' AND created_at::date = (now() AT TIME ZONE 'America/Panama')::date`;
-  if (aiCallsToday >= 30) return reply.code(429).send({ error: 'Límite de 30 sugerencias con IA por día alcanzado. Intenta mañana.' });
+  const [reserved] = await sql`
+    WITH cupo AS (
+      SELECT count(*)::int AS used FROM audit_log
+      WHERE user_id = ${auth.sub} AND action = 'routine_ai_suggestion'
+        AND created_at::date = (now() AT TIME ZONE 'America/Panama')::date
+    )
+    INSERT INTO audit_log (user_id, user_email, action, route, detail)
+    SELECT ${auth.sub}, ${auth.email || null}, 'routine_ai_suggestion', '/api/routines/suggest',
+      ${JSON.stringify({ mode: input.existingExercises?.length ? 'modify' : 'suggest', clientId: input.clientId || null })}
+    FROM cupo WHERE cupo.used < 30
+    RETURNING id`;
+  if (!reserved) return reply.code(429).send({ error: 'Límite de 30 sugerencias con IA por día alcanzado. Intenta mañana.' });
+  const aiAuditId = String(reserved.id);
 
   const catalogo = await sql`
     SELECT name, section, level, machine, free_weight FROM exercises
     WHERE owner_id = ${auth.sub} AND NOT archived ORDER BY section, name
   `;
-  if (!catalogo.length) return reply.code(409).send({ error: 'No hay ejercicios en el catálogo para proponer una rutina' });
+  if (!catalogo.length) { await sql`DELETE FROM audit_log WHERE id = ${aiAuditId}`; return reply.code(409).send({ error: 'No hay ejercicios en el catálogo para proponer una rutina' }); }
 
   let historial: Array<{ title: string; assignedOn: string | null; sections: string[] }> = [];
   let condiciones: string[] = [];
@@ -4994,11 +5004,9 @@ app.post('/api/routines/suggest', { preHandler: requireStaff }, async (request, 
         duracionMinutos: input.durationMinutes
       });
     }
-    await sql`INSERT INTO audit_log (user_id, user_email, action, route, detail)
-      VALUES (${auth.sub}, ${auth.email || null}, 'routine_ai_suggestion', '/api/routines/suggest',
-        ${JSON.stringify({ mode: input.existingExercises?.length ? 'modify' : 'suggest', clientId: input.clientId || null })})`;
     return propuesta;
   } catch (error) {
+    await sql`DELETE FROM audit_log WHERE id = ${aiAuditId}`.catch(() => {});
     app.log.warn({ err: error, ownerId: auth.sub }, 'No se pudo proponer una rutina');
     return reply.code(502).send({ error: (error as Error).message });
   }
@@ -5010,18 +5018,28 @@ app.post('/api/routines/:id/modify', { preHandler: requireStaff }, async (reques
   const auth = request.user as AuthUser;
   if (!routineSuggestionsReady) return reply.code(503).send({ error: 'La propuesta con IA todavía no está configurada' });
 
-  const [{ count: aiCallsToday2 }] = await sql`SELECT count(*)::int AS count FROM audit_log
-    WHERE user_id = ${auth.sub} AND action = 'routine_ai_suggestion' AND created_at::date = (now() AT TIME ZONE 'America/Panama')::date`;
-  if (aiCallsToday2 >= 30) return reply.code(429).send({ error: 'Límite de 30 sugerencias con IA por día alcanzado. Intenta mañana.' });
-
   const id = z.string().uuid().parse((request.params as { id: string }).id);
   const input = routineModifySchema.parse(request.body);
 
+  const [reserved2] = await sql`
+    WITH cupo AS (
+      SELECT count(*)::int AS used FROM audit_log
+      WHERE user_id = ${auth.sub} AND action = 'routine_ai_suggestion'
+        AND created_at::date = (now() AT TIME ZONE 'America/Panama')::date
+    )
+    INSERT INTO audit_log (user_id, user_email, action, route, detail)
+    SELECT ${auth.sub}, ${auth.email || null}, 'routine_ai_suggestion', ${'/api/routines/' + id + '/modify'},
+      ${JSON.stringify({ mode: 'modify-existing', routineId: id })}
+    FROM cupo WHERE cupo.used < 30
+    RETURNING id`;
+  if (!reserved2) return reply.code(429).send({ error: 'Límite de 30 sugerencias con IA por día alcanzado. Intenta mañana.' });
+  const aiAuditId2 = String(reserved2.id);
+
   const [rutina] = await sql`SELECT id, title, description, sessions_per_week, exercises FROM routines WHERE id = ${id} AND owner_id = ${auth.sub} AND NOT archived`;
-  if (!rutina) return reply.code(404).send({ error: 'Rutina no encontrada' });
+  if (!rutina) { await sql`DELETE FROM audit_log WHERE id = ${aiAuditId2}`; return reply.code(404).send({ error: 'Rutina no encontrada' }); }
 
   const catalogo = await sql`SELECT name, section, level, machine, free_weight FROM exercises WHERE owner_id = ${auth.sub} AND NOT archived ORDER BY section, name`;
-  if (!catalogo.length) return reply.code(409).send({ error: 'No hay ejercicios en el catálogo' });
+  if (!catalogo.length) { await sql`DELETE FROM audit_log WHERE id = ${aiAuditId2}`; return reply.code(409).send({ error: 'No hay ejercicios en el catálogo' }); }
 
   const ejerciciosActuales = Array.isArray(rutina.exercises) ? rutina.exercises as Array<{ name: string; sets?: number; reps?: string; notes?: string; block?: number; rounds?: number }> : [];
 
@@ -5044,11 +5062,9 @@ app.post('/api/routines/:id/modify', { preHandler: requireStaff }, async (reques
       catalogo: catalogo.map(e => ({ name: String(e.name), section: String(e.section), level: e.level as string, machine: e.machine as string, freeWeight: e.free_weight as string })),
       condiciones
     });
-    await sql`INSERT INTO audit_log (user_id, user_email, action, route, detail)
-      VALUES (${auth.sub}, ${auth.email || null}, 'routine_ai_suggestion', ${'/api/routines/' + id + '/modify'},
-        ${JSON.stringify({ mode: 'modify-existing', routineId: id })})`;
     return propuesta;
   } catch (error) {
+    await sql`DELETE FROM audit_log WHERE id = ${aiAuditId2}`.catch(() => {});
     app.log.warn({ err: error, ownerId: auth.sub }, 'No se pudo modificar la rutina con IA');
     return reply.code(502).send({ error: (error as Error).message });
   }
@@ -11125,7 +11141,7 @@ app.get('/api/public/routine/:token', async (request, reply) => {
   const fila = encontrado.fila;
   await sql`UPDATE routine_share_links SET opens = opens + 1, last_opened_at = now() WHERE id = ${fila.id} AND (last_opened_at IS NULL OR last_opened_at < now() - interval '1 minute')`;
   const [hoyFila] = await sql`SELECT (now() AT TIME ZONE 'America/Panama')::date::text AS hoy`;
-  void notifyRoutineActivity({ ownerId: String(fila.owner_id), clientId: String(fila.client_id), routineId: String(fila.routine_id), completedOn: String(hoyFila.hoy), kind: 'viewed', clientName: String(fila.full_name), routineTitle: String(fila.title), runNumber: 1 });
+  notifyRoutineActivity({ ownerId: String(fila.owner_id), clientId: String(fila.client_id), routineId: String(fila.routine_id), completedOn: String(hoyFila.hoy), kind: 'viewed', clientName: String(fila.full_name), routineTitle: String(fila.title), runNumber: 1 }).catch(err => app.log.warn({ err }, 'No se pudo registrar aviso de rutina vista'));
   const hoy = String(hoyFila.hoy);
   const [hecha] = await sql`SELECT count(*)::int AS count, max(run_number)::int AS latest_run FROM routine_completions WHERE client_id = ${fila.client_id} AND routine_id = ${fila.routine_id} AND completed_on = ${hoy}::date AND completion_percent > 0`;
   // Las clases de su viaje que siguen por delante (o la de hoy): le dicen qué cuenta y cuándo.
