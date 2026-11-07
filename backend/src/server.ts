@@ -2116,7 +2116,7 @@ app.post('/api/auth/reset-password', async (request, reply) => {
   const passwordHash = await bcrypt.hash(input.password, 12);
   const [user] = await sql`
     UPDATE users SET email = ${input.email.toLowerCase()}, password_hash = ${passwordHash}, updated_at = now()
-    WHERE id = (SELECT id FROM users WHERE role = 'admin' AND active = true ORDER BY created_at LIMIT 1)
+    WHERE id = (SELECT id FROM users WHERE role IN ('superadmin', 'admin') AND active = true ORDER BY (role = 'superadmin') DESC, created_at LIMIT 1)
     RETURNING id, email, full_name, role
   `;
   if (!user) return reply.code(404).send({ error: 'No existe una cuenta administradora activa' });
@@ -4490,7 +4490,7 @@ async function routineAssignmentDates(transaction: TransactionSql, ownerId: stri
   }, start);
   if (dueOn && dueOn < start) throw new Error('La fecha límite no puede ser anterior al inicio de la rutina.');
   const dueOnAdjusted = Boolean(dueOn && dueOn > cycle.cycleEnd);
-  return { startsOn: start, dueOn: dueOn || cycle.cycleEnd, dueOnAdjusted, cycle };
+  return { startsOn: start, dueOn: dueOn && dueOn <= cycle.cycleEnd ? dueOn : cycle.cycleEnd, dueOnAdjusted, cycle };
 }
 
 /**
@@ -4923,17 +4923,18 @@ app.post('/api/routines/suggest', { preHandler: requireStaff }, async (request, 
   if (!routineSuggestionsReady) return reply.code(503).send({ error: 'La propuesta con IA todavía no está configurada' });
   const input = routineSuggestionSchema.parse(request.body);
 
-  const [reserved] = await sql`
-    WITH cupo AS (
-      SELECT count(*)::int AS used FROM audit_log
+  const reserved = await sql.begin(async tx => {
+    await tx`SELECT pg_advisory_xact_lock(hashtext('ai_limit_' || ${auth.sub}))`;
+    const [{ count }] = await tx`SELECT count(*)::int AS count FROM audit_log
       WHERE user_id = ${auth.sub} AND action = 'routine_ai_suggestion'
-        AND created_at::date = (now() AT TIME ZONE 'America/Panama')::date
-    )
-    INSERT INTO audit_log (user_id, user_email, action, route, detail)
-    SELECT ${auth.sub}, ${auth.email || null}, 'routine_ai_suggestion', '/api/routines/suggest',
-      ${JSON.stringify({ mode: input.existingExercises?.length ? 'modify' : 'suggest', clientId: input.clientId || null })}
-    FROM cupo WHERE cupo.used < 30
-    RETURNING id`;
+        AND created_at::date = (now() AT TIME ZONE 'America/Panama')::date`;
+    if (count >= 30) return null;
+    const [row] = await tx`INSERT INTO audit_log (user_id, user_email, action, route, detail)
+      VALUES (${auth.sub}, ${auth.email || null}, 'routine_ai_suggestion', '/api/routines/suggest',
+        ${JSON.stringify({ mode: input.existingExercises?.length ? 'modify' : 'suggest', clientId: input.clientId || null })})
+      RETURNING id`;
+    return row;
+  });
   if (!reserved) return reply.code(429).send({ error: 'Límite de 30 sugerencias con IA por día alcanzado. Intenta mañana.' });
   const aiAuditId = String(reserved.id);
 
@@ -5021,17 +5022,18 @@ app.post('/api/routines/:id/modify', { preHandler: requireStaff }, async (reques
   const id = z.string().uuid().parse((request.params as { id: string }).id);
   const input = routineModifySchema.parse(request.body);
 
-  const [reserved2] = await sql`
-    WITH cupo AS (
-      SELECT count(*)::int AS used FROM audit_log
+  const reserved2 = await sql.begin(async tx => {
+    await tx`SELECT pg_advisory_xact_lock(hashtext('ai_limit_' || ${auth.sub}))`;
+    const [{ count }] = await tx`SELECT count(*)::int AS count FROM audit_log
       WHERE user_id = ${auth.sub} AND action = 'routine_ai_suggestion'
-        AND created_at::date = (now() AT TIME ZONE 'America/Panama')::date
-    )
-    INSERT INTO audit_log (user_id, user_email, action, route, detail)
-    SELECT ${auth.sub}, ${auth.email || null}, 'routine_ai_suggestion', ${'/api/routines/' + id + '/modify'},
-      ${JSON.stringify({ mode: 'modify-existing', routineId: id })}
-    FROM cupo WHERE cupo.used < 30
-    RETURNING id`;
+        AND created_at::date = (now() AT TIME ZONE 'America/Panama')::date`;
+    if (count >= 30) return null;
+    const [row] = await tx`INSERT INTO audit_log (user_id, user_email, action, route, detail)
+      VALUES (${auth.sub}, ${auth.email || null}, 'routine_ai_suggestion', ${'/api/routines/' + id + '/modify'},
+        ${JSON.stringify({ mode: 'modify-existing', routineId: id })})
+      RETURNING id`;
+    return row;
+  });
   if (!reserved2) return reply.code(429).send({ error: 'Límite de 30 sugerencias con IA por día alcanzado. Intenta mañana.' });
   const aiAuditId2 = String(reserved2.id);
 
@@ -9151,7 +9153,7 @@ async function dispatchReminders() {
       FROM notification_preferences np
       JOIN users u ON u.id = np.user_id AND u.active = true
       JOIN clients c ON (u.role = 'client' AND c.portal_user_id = u.id)
-        OR (u.role IN ('admin', 'trainer') AND c.owner_id = u.id)
+        OR (u.role IN ('admin', 'trainer', 'superadmin') AND c.owner_id = u.id)
       JOIN sessions s ON s.client_id = c.id
       WHERE np.browser_enabled = true AND s.status = 'scheduled' AND NOT COALESCE(s.paused_hold, false)
         AND c.service_mode <> 'demo'
@@ -9169,7 +9171,7 @@ async function dispatchReminders() {
       FROM notification_preferences np
       JOIN users u ON u.id = np.user_id AND u.active = true
       JOIN clients c ON (u.role = 'client' AND c.portal_user_id = u.id)
-        OR (u.role IN ('admin', 'trainer') AND c.owner_id = u.id)
+        OR (u.role IN ('admin', 'trainer', 'superadmin') AND c.owner_id = u.id)
       JOIN invoices i ON i.client_id = c.id
       WHERE np.browser_enabled = true AND i.status = 'pending'
         AND c.service_mode <> 'demo'
@@ -9189,7 +9191,7 @@ async function dispatchReminders() {
       FROM notification_preferences np
       JOIN users u ON u.id = np.user_id AND u.active = true
       JOIN clients c ON (u.role = 'client' AND c.portal_user_id = u.id)
-        OR (u.role IN ('admin', 'trainer') AND c.owner_id = u.id)
+        OR (u.role IN ('admin', 'trainer', 'superadmin') AND c.owner_id = u.id)
       JOIN billing_invoices i ON i.payer_client_id = c.id
       WHERE ${billingEngine.state === 'new' ? sql`true` : sql`false`} AND np.browser_enabled = true AND i.status IN ('pendiente', 'parcial') AND c.status <> 'paused' AND c.service_mode <> 'demo'
         AND i.due_on BETWEEN current_date - 30 AND current_date + np.payment_reminder_days
@@ -9203,7 +9205,7 @@ async function dispatchReminders() {
       SELECT u.id AS user_id, 'pause' AS kind, pp.id AS reference_id, u.role, c.full_name, pp.ends_on
       FROM client_package_pauses pp
       JOIN clients c ON c.id = pp.client_id
-      JOIN users u ON u.id = c.owner_id AND u.active = true AND u.role IN ('admin', 'trainer')
+      JOIN users u ON u.id = c.owner_id AND u.active = true AND u.role IN ('admin', 'trainer', 'superadmin')
       JOIN notification_preferences np ON np.user_id = u.id
       WHERE pp.status = 'active' AND pp.ends_on = ((now() AT TIME ZONE 'America/Panama')::date + 2)
         AND c.service_mode <> 'demo'
@@ -9223,7 +9225,7 @@ async function dispatchReminders() {
   const pendingRows = await sql<ReminderCandidate[]>`
     SELECT u.id AS user_id, 'pending' AS kind, s.id AS reference_id, u.role, c.full_name, s.starts_at
     FROM notification_preferences np
-    JOIN users u ON u.id = np.user_id AND u.active = true AND u.role IN ('admin', 'trainer')
+    JOIN users u ON u.id = np.user_id AND u.active = true AND u.role IN ('admin', 'trainer', 'superadmin')
     JOIN clients c ON c.owner_id = u.id
     JOIN sessions s ON s.client_id = c.id
     WHERE np.browser_enabled = true AND s.status = 'scheduled'
@@ -9241,7 +9243,7 @@ async function dispatchReminders() {
   // Aviso previo al corte de los clientes de rutinas (Entrega C): solo a la entrenadora, con push activo.
   const prepOwners = await sql`
     SELECT u.id::text AS id, u.role FROM users u JOIN notification_preferences np ON np.user_id = u.id
-    WHERE u.active = true AND u.role IN ('admin', 'trainer') AND np.browser_enabled = true
+    WHERE u.active = true AND u.role IN ('admin', 'trainer', 'superadmin') AND np.browser_enabled = true
       AND EXISTS (SELECT 1 FROM push_subscriptions ps WHERE ps.user_id = u.id AND ps.active = true)`;
   const prepRows: ReminderCandidate[] = [];
   for (const owner of prepOwners) {
