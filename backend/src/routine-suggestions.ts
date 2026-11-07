@@ -364,7 +364,7 @@ export async function modifyRoutine(entrada: {
 
   const instrucciones = [
     'Eres asistente de una entrenadora personal en Panamá. Te da una rutina YA ARMADA y te pide cambios específicos.',
-    'Devuelve la rutina COMPLETA con los cambios aplicados. Lo que la entrenadora NO mencione debe quedar IGUAL: mismos ejercicios, mismas series, repeticiones, notas, bloques y rondas.',
+    'Devuelve la rutina COMPLETA con los cambios aplicados. Lo que la entrenadora NO mencione debe quedar IGUAL: mismos ejercicios, mismas series, repeticiones, notas, bloques y rondas, description, warmup, cooldown y stretching.',
     'Elige ejercicios ÚNICAMENTE de la lista del catálogo, copiando el nombre exacto. No inventes ejercicios.',
     'Si la entrenadora pide reemplazar un ejercicio por nombre, búscalo en el catálogo y sustitúyelo. Si pide agregar ejercicios, agrégalos en la posición más lógica.',
     'Responde sólo JSON válido con esta forma: {"title":string,"description":string,"warmup":string,"cooldown":string,"stretching":string,"sessionsPerWeek":number,'
@@ -380,12 +380,14 @@ export async function modifyRoutine(entrada: {
     );
   }
 
-  const rutinaActualTexto = JSON.stringify({
+  const rutinaActualObj: Record<string, unknown> = {
     title: entrada.tituloActual,
     exercises: entrada.ejerciciosActuales.map(e => ({
       name: e.name, sets: e.sets, reps: e.reps, notes: e.notes, block: e.block, rounds: e.rounds
     }))
-  });
+  };
+  if (entrada.descripcionActual) rutinaActualObj.description = entrada.descripcionActual;
+  const rutinaActualTexto = JSON.stringify(rutinaActualObj);
 
   const respuesta = await fetch('https://api.deepseek.com/chat/completions', {
     method: 'POST',

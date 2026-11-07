@@ -2721,18 +2721,26 @@ app.post('/api/account-settings/hero-photo', { preHandler: requireStaff }, async
   const [, contentType, base64] = match;
   const body = Buffer.from(base64, 'base64');
   if (body.length > 3_000_000) return reply.code(400).send({ error: 'La imagen no puede superar 3 MB' });
+  const magicOk = (contentType === 'image/jpeg' && body[0] === 0xFF && body[1] === 0xD8 && body[2] === 0xFF)
+    || (contentType === 'image/png' && body[0] === 0x89 && body[1] === 0x50 && body[2] === 0x4E && body[3] === 0x47)
+    || (contentType === 'image/webp' && body[0] === 0x52 && body[1] === 0x49 && body[2] === 0x46 && body[3] === 0x46);
+  if (!magicOk) return reply.code(400).send({ error: 'El archivo no es una imagen válida del tipo declarado' });
   const ext = contentType === 'image/jpeg' ? 'jpg' : contentType === 'image/png' ? 'png' : 'webp';
   const objectKey = `hero-photos/${auth.sub}/${randomUUID()}.${ext}`;
+  const [prev] = await sql`SELECT hero_photo_key FROM account_settings WHERE owner_id = ${auth.sub}`;
   await uploadObject(objectKey, contentType, body);
   await sql`INSERT INTO account_settings (owner_id, hero_photo_key)
     VALUES (${auth.sub}, ${objectKey}) ON CONFLICT (owner_id) DO UPDATE SET hero_photo_key = EXCLUDED.hero_photo_key, updated_at = now()`;
+  if (prev?.hero_photo_key) deleteObject(String(prev.hero_photo_key)).catch(err => app.log.warn({ err, key: prev.hero_photo_key }, 'No se pudo borrar la foto anterior de R2'));
   const url = await createDownloadUrl(objectKey);
   return reply.code(201).send({ saved: true, url });
 });
 
 app.delete('/api/account-settings/hero-photo', { preHandler: requireStaff }, async (request, reply) => {
   const auth = request.user as AuthUser;
+  const [prev] = await sql`SELECT hero_photo_key FROM account_settings WHERE owner_id = ${auth.sub}`;
   await sql`UPDATE account_settings SET hero_photo_key = NULL, updated_at = now() WHERE owner_id = ${auth.sub}`;
+  if (prev?.hero_photo_key) deleteObject(String(prev.hero_photo_key)).catch(err => app.log.warn({ err, key: prev.hero_photo_key }, 'No se pudo borrar la foto de R2'));
   return { deleted: true };
 });
 
@@ -4870,7 +4878,8 @@ const routineSuggestionSchema = z.object({
     reps: z.string().optional(), notes: z.string().optional(),
     block: z.coerce.number().optional(), rounds: z.coerce.number().optional()
   })).optional(),
-  existingTitle: z.string().max(120).optional()
+  existingTitle: z.string().max(120).optional(),
+  existingDescription: z.string().max(2000).optional()
 });
 
 // Los pesos que este cliente ya manejó, por ejercicio. Salen de sus rutinas
@@ -4912,6 +4921,10 @@ app.post('/api/routines/suggest', { preHandler: requireStaff }, async (request, 
   const auth = request.user as AuthUser;
   if (!routineSuggestionsReady) return reply.code(503).send({ error: 'La propuesta con IA todavía no está configurada' });
   const input = routineSuggestionSchema.parse(request.body);
+
+  const [{ count: aiCallsToday }] = await sql`SELECT count(*)::int AS count FROM audit_log
+    WHERE user_id = ${auth.sub} AND action = 'routine_ai_suggestion' AND created_at > now() - interval '24 hours'`;
+  if (aiCallsToday >= 30) return reply.code(429).send({ error: 'Límite de 30 sugerencias con IA por día alcanzado. Intenta mañana.' });
 
   const catalogo = await sql`
     SELECT name, section, level, machine, free_weight FROM exercises
@@ -4957,26 +4970,31 @@ app.post('/api/routines/suggest', { preHandler: requireStaff }, async (request, 
 
   try {
     const catalogoMapeado = catalogo.map(e => ({ name: String(e.name), section: String(e.section), level: e.level as string, machine: e.machine as string, freeWeight: e.free_weight as string }));
+    let propuesta;
     if (input.existingExercises?.length) {
-      const propuesta = await modifyRoutine({
+      propuesta = await modifyRoutine({
         ejerciciosActuales: input.existingExercises as Array<{ name: string; sets?: number; reps?: string; notes?: string; block?: number; rounds?: number }>,
         tituloActual: input.existingTitle || 'Rutina',
+        descripcionActual: input.existingDescription || undefined,
         instruccion: input.description,
         catalogo: catalogoMapeado,
         condiciones
       });
-      return propuesta;
+    } else {
+      propuesta = await suggestRoutine({
+        descripcion: input.description,
+        catalogo: catalogoMapeado,
+        historial, condiciones,
+        repetirGrupos: input.repeatMuscleGroups,
+        clienteNombre,
+        paraCliente: input.forClient || input.forTravel,
+        paraViaje: input.forTravel,
+        duracionMinutos: input.durationMinutes
+      });
     }
-    const propuesta = await suggestRoutine({
-      descripcion: input.description,
-      catalogo: catalogoMapeado,
-      historial, condiciones,
-      repetirGrupos: input.repeatMuscleGroups,
-      clienteNombre,
-      paraCliente: input.forClient || input.forTravel,
-      paraViaje: input.forTravel,
-      duracionMinutos: input.durationMinutes
-    });
+    sql`INSERT INTO audit_log (user_id, user_email, action, route, detail)
+      VALUES (${auth.sub}, ${auth.email || null}, 'routine_ai_suggestion', '/api/routines/suggest',
+        ${JSON.stringify({ mode: input.existingExercises?.length ? 'modify' : 'suggest', clientId: input.clientId || null })})`.catch(() => {});
     return propuesta;
   } catch (error) {
     app.log.warn({ err: error, ownerId: auth.sub }, 'No se pudo proponer una rutina');
@@ -11521,6 +11539,7 @@ async function checkRoutinePaceAlerts() {
       body: `Lleva ${row.hechas} de ${row.routines_per_month} este ciclo. Última hace ${row.dias_desde} días.`,
       url: new URL('/#clients', config.APP_URL).toString()
     });
+    if (!enviada) continue;
     const refHash = createHash('md5').update(`routine-pace:${row.client_id}:${row.fecha_ref}`).digest('hex');
     const refUuid = `${refHash.slice(0, 8)}-${refHash.slice(8, 12)}-${refHash.slice(12, 16)}-${refHash.slice(16, 20)}-${refHash.slice(20, 32)}`;
     await sql`INSERT INTO notification_deliveries (user_id, kind, reference_id)
