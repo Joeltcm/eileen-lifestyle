@@ -33,7 +33,7 @@ import { routineCycleReport } from './routine-cycle-report.js';
 import { routineCyclePrep, type RoutinePrepItem } from './routine-cycle-prep.js';
 
 type AuthUser = { sub: string; role: 'admin' | 'trainer' | 'client' | 'superadmin'; email: string };
-const BUILD_SHA = (() => { try { return execSync('git rev-parse --short HEAD', { encoding: 'utf8' }).trim(); } catch { return 'unknown'; } })();
+const BUILD_SHA = process.env.RAILWAY_GIT_COMMIT_SHA?.slice(0, 7) || (() => { try { return execSync('git rev-parse --short HEAD', { encoding: 'utf8' }).trim(); } catch { return 'unknown'; } })();
 const app = Fastify({ logger: true, trustProxy: true });
 const maxDocumentSize = 20 * 1024 * 1024;
 const documentContentTypes = ['application/pdf', 'image/jpeg', 'image/png', 'image/webp'] as const;
