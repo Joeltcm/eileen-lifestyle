@@ -4,6 +4,7 @@ import jwt from '@fastify/jwt';
 import bcrypt from 'bcryptjs';
 import webpush from 'web-push';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
+import { execSync } from 'node:child_process';
 import { z, ZodError } from 'zod';
 import { config } from './config.js';
 import type { Fragment, TransactionSql } from 'postgres';
@@ -32,6 +33,7 @@ import { routineCycleReport } from './routine-cycle-report.js';
 import { routineCyclePrep, type RoutinePrepItem } from './routine-cycle-prep.js';
 
 type AuthUser = { sub: string; role: 'admin' | 'trainer' | 'client' | 'superadmin'; email: string };
+const BUILD_SHA = (() => { try { return execSync('git rev-parse --short HEAD', { encoding: 'utf8' }).trim(); } catch { return 'unknown'; } })();
 const app = Fastify({ logger: true, trustProxy: true });
 const maxDocumentSize = 20 * 1024 * 1024;
 const documentContentTypes = ['application/pdf', 'image/jpeg', 'image/png', 'image/webp'] as const;
@@ -1802,7 +1804,8 @@ app.post('/api/billing/recurring/generate', { preHandler: requireStaff }, async 
 app.get('/health', async () => {
   const [database] = await sql`SELECT now() AS time`;
   return {
-    status: 'ok', service: 'eileen-lifestyle-api', databaseTime: database.time,
+    status: 'ok', service: 'eileen-lifestyle-api', buildSha: BUILD_SHA,
+    databaseTime: database.time,
     documentStorage: storageReady ? 'ready' : 'configuration_required',
     inbodyAnalysis: inbodyAnalysisReady ? 'configured' : 'configuration_required',
     webPush: webPushReady ? 'configured' : 'configuration_required',
