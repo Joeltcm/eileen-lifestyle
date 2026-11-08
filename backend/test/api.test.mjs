@@ -106,12 +106,17 @@ describe('autenticación', () => {
     assert.equal(malo.datos.error, inexistente.datos.error, 'el mensaje no debe delatar la cuenta');
   });
 
+  test('la bitácora es solo para superadmin: admin recibe 403', async () => {
+    assert.equal((await api.get('/api/audit-log?limit=1')).estado, 403, 'admin no puede ver la bitácora');
+  });
+
   test('promover a superadmin para las pruebas de auditoría y diagnósticos', async () => {
     await db`UPDATE users SET role = 'superadmin' WHERE email = ${CREDENCIALES.email}`;
     const { estado, datos } = await api.post('/api/auth/login', { email: CREDENCIALES.email, password: CREDENCIALES.password });
     assert.equal(estado, 200);
     assert.equal(datos.user.role, 'superadmin');
     api.usarToken(datos.token);
+    assert.equal((await api.get('/api/audit-log?limit=1')).estado, 200, 'superadmin sí puede ver la bitácora');
   });
 });
 
