@@ -96,7 +96,11 @@ await registerBirthdayRoutes(app);
 
 async function requireAuth(request: FastifyRequest) {
   await request.jwtVerify();
-  return request.user as AuthUser;
+  const jwt = request.user as AuthUser;
+  const [dbUser] = await sql`SELECT role, active FROM users WHERE id = ${jwt.sub}`;
+  if (!dbUser || !dbUser.active) { const e = new Error('Cuenta desactivada'); (e as Error & { statusCode: number }).statusCode = 401; throw e; }
+  if (dbUser.role !== jwt.role) jwt.role = dbUser.role;
+  return jwt;
 }
 
 // La sesión duraba 12 horas, así que a la entrenadora la sacaba a media
@@ -2073,19 +2077,20 @@ app.post('/api/auth/setup', async (request, reply) => {
     await registrarIntento('setup', null, request.ip, false);
     return reply.code(403).send({ error: 'Token de configuración inválido' });
   }
-  const [{ count }] = await sql`SELECT count(*)::integer AS count FROM users`;
-  if (count > 0) return reply.code(409).send({ error: 'La cuenta administradora ya fue creada' });
   const input = setupSchema.parse(request.body);
   const passwordHash = await bcrypt.hash(input.password, 12);
-  const [user] = await sql`
-    INSERT INTO users (email, password_hash, full_name, role)
-    VALUES (${input.email.toLowerCase()}, ${passwordHash}, ${input.fullName}, 'admin')
-    RETURNING id, email, full_name, role
-  `;
-  // En una instalación nueva la migración corre antes de que exista la cuenta
-  // administradora; completa aquí el valor inicial que la migración deja para
-  // cuentas ya existentes.
-  await sql`INSERT INTO account_settings (owner_id, contact_whatsapp) VALUES (${user.id}, '50762128180') ON CONFLICT (owner_id) DO NOTHING`;
+  const user = await sql.begin('serializable', async tx => {
+    const [{ count }] = await tx`SELECT count(*)::integer AS count FROM users`;
+    if (count > 0) return null;
+    const [u] = await tx`
+      INSERT INTO users (email, password_hash, full_name, role)
+      VALUES (${input.email.toLowerCase()}, ${passwordHash}, ${input.fullName}, 'admin')
+      RETURNING id, email, full_name, role
+    `;
+    await tx`INSERT INTO account_settings (owner_id, contact_whatsapp) VALUES (${u.id}, '50762128180') ON CONFLICT (owner_id) DO NOTHING`;
+    return u;
+  });
+  if (!user) return reply.code(409).send({ error: 'La cuenta administradora ya fue creada' });
   const token = app.jwt.sign({ sub: user.id, email: user.email, role: user.role }, { expiresIn: sessionLifetime });
   return reply.code(201).send({ user, token });
 });
@@ -2139,11 +2144,10 @@ app.post('/api/auth/reset-password', async (request, reply) => {
 });
 
 app.get('/api/me', { preHandler: requireAuth }, async request => {
-  // Se devuelve un token nuevo en cada arranque: usar la aplicación renueva la
-  // sesión, y sólo caduca tras 30 días sin abrirla.
-  const renovado = app.jwt.sign({ sub: (request.user as AuthUser).sub, email: (request.user as AuthUser).email, role: (request.user as AuthUser).role }, { expiresIn: sessionLifetime });
   const auth = request.user as AuthUser;
   const [user] = await sql`SELECT id, email, full_name, role FROM users WHERE id = ${auth.sub}`;
+  if (!user) { const e = new Error('Usuario no encontrado'); (e as Error & { statusCode: number }).statusCode = 401; throw e; }
+  const renovado = app.jwt.sign({ sub: user.id, email: user.email, role: user.role }, { expiresIn: sessionLifetime });
   return { user, token: renovado };
 });
 
