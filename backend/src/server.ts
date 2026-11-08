@@ -1,5 +1,6 @@
 import Fastify, { type FastifyReply, type FastifyRequest } from 'fastify';
 import cors from '@fastify/cors';
+import helmet from '@fastify/helmet';
 import jwt from '@fastify/jwt';
 import bcrypt from 'bcryptjs';
 import webpush from 'web-push';
@@ -71,6 +72,11 @@ await app.register(cors, {
   // llamada, porque todas llevan cabecera de autorización: el doble de viajes
   // para el mismo dato. Dos horas es el máximo que respeta Chrome.
   maxAge: 7200
+});
+await app.register(helmet, {
+  contentSecurityPolicy: false,
+  crossOriginEmbedderPolicy: false,
+  crossOriginResourcePolicy: { policy: 'cross-origin' },
 });
 await app.register(jwt, { secret: config.JWT_SECRET });
 await registerZohoRoutes(app);
