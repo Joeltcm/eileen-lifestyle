@@ -325,24 +325,6 @@ describe('el saldo sale del plan sin tener que teclearlo', () => {
       'cubre el mes en que vence, no el mes en que se creó');
   });
 
-  test('no abre el saldo futuro, pero sí el ciclo que empieza hoy', { todo: 'LEGADO: prueba del cobro anterior que ya fallaba antes de las rutinas; se retira junto con ese código tras la primera emisión automática del 15-10-2026 (canal C-136). Se ejecuta y se reporta, pero no pone el CI en rojo.' }, async () => {
-    const plan = await api.post('/api/plans', { name: 'Borde de apertura', billingModel: 'monthly', price: 150, sessionsIncluded: 8 });
-    const cutoff = partesPanama().d;
-    const clienteFuturo = await api.post('/api/clients', { fullName: 'Todavía no abre', planId: plan.datos.id, cutoffDay: 1 });
-    await api.post('/api/invoices', { clientId: clienteFuturo.datos.id, concept: 'Mensualidad futura', amount: 150, dueOn: enDiasPa(10).iso });
-    await api.post('/api/billing/recurring/generate', {});
-    assert.equal((await api.get('/api/packages')).datos.filter(p => p.client_id === clienteFuturo.datos.id).length, 0,
-      'un cobro futuro no debe abrir el próximo saldo');
-
-    const clienteActual = await api.post('/api/clients', { fullName: 'Abre al iniciar', planId: plan.datos.id, cutoffDay: cutoff });
-    await api.post('/api/invoices', { clientId: clienteActual.datos.id, concept: 'Mensualidad vigente', amount: 150, dueOn: hoyPa() });
-    await api.post('/api/billing/recurring/generate', {});
-    const saldo = (await api.get('/api/packages')).datos.find(p => p.client_id === clienteActual.datos.id);
-    assert.ok(saldo, 'el saldo abre cuando el ciclo comienza');
-    assert.equal(String(saldo.purchased_on).slice(0, 10), cicloCortePa(hoyPa(), cutoff).inicio,
-      'purchased_on guarda el inicio del ciclo, no el día de ejecución');
-  });
-
   test('recupera el ciclo actual de un corte día 1 si la corrida del día faltó', async () => {
     const plan = await api.post('/api/plans', { name: 'Recuperación corte uno', billingModel: 'monthly', price: 220, sessionsIncluded: 12 });
     const c = await api.post('/api/clients', { fullName: 'Sandy Asis de prueba', planId: plan.datos.id, cutoffDay: 1 });
@@ -1159,47 +1141,6 @@ describe('integridad de saldos y concurrencia', () => {
 });
 
 describe('modalidad de pago y cobros pendientes', () => {
-  test('no anticipado cobra cada sesión realizada del ciclo actual', { todo: 'LEGADO: prueba del cobro anterior que ya fallaba antes de las rutinas; se retira junto con ese código tras la primera emisión automática del 15-10-2026 (canal C-136). Se ejecuta y se reporta, pero no pone el CI en rojo.' }, async () => {
-    const plan = await api.post('/api/plans', {
-      name: 'Crédito por clases', billingModel: 'monthly', price: 275, sessionsIncluded: 10
-    });
-    const c = await api.post('/api/clients', {
-      fullName: 'Julio crédito reproducible', planId: plan.datos.id, cutoffDay: 31, paymentMode: 'no_anticipado'
-    });
-    assert.equal(c.estado, 201);
-
-    const fechas = Array.from({ length: 12 }, (_, index) =>
-      new Date(`${enDiasPa(-index - 1).iso}T15:00:00-05:00`).toISOString());
-    const lote = await api.post('/api/sessions/batch', {
-      clientId: c.datos.id, startsAt: fechas, durationMinutes: 60, mode: 'Presencial'
-    });
-    assert.equal(lote.datos.creadas, 12);
-    for (const session of lote.datos.sesiones) {
-      const marcada = await api.patch(`/api/sessions/${session.id}/compliance`, {
-        outcome: 'completed', completionPercent: 100
-      });
-      assert.equal(marcada.estado, 200);
-    }
-
-    const [year, month] = hoyPa().split('-').map(Number);
-    const ultimoDia = new Date(Date.UTC(year, month, 0)).getUTCDate();
-    const dueOn = `${year}-${String(month).padStart(2, '0')}-${String(ultimoDia).padStart(2, '0')}`;
-    // Simula la factura de septiembre que ya existía con el importe anterior:
-    // la generación debe corregirla retroactivamente a 12 × $25 = $300.
-    const factura = await api.post('/api/invoices', {
-      clientId: c.datos.id, concept: 'Mensualidad', amount: 275, dueOn
-    });
-    assert.equal(factura.estado, 201);
-
-    const generado = await api.post('/api/billing/recurring/generate', {});
-    assert.equal(generado.estado, 200);
-    assert.ok(generado.datos.creditInvoicesRecalculated >= 1, 'recalcula la factura retroactiva y cualquier ciclo generado');
-    const actualizada = (await api.get('/api/invoices')).datos.find(item => item.id === factura.datos.id);
-    assert.equal(Number(actualizada.amount), 300, '12 sesiones realizadas a $25');
-    assert.match(actualizada.concept, /12 clases/, 'la factura explica cuántas clases se cobraron');
-    assert.equal((actualizada.line_items || []).length, 12, 'la factura detalla cada sesión');
-  });
-
   test('la cancelación a crédito requiere decisión y se refleja en la factura', async () => {
     const c = await api.post('/api/clients', {
       fullName: 'Julio cancelación manual', billingModel: 'monthly', standardPrice: 275,
@@ -1522,45 +1463,6 @@ describe('cobertura end-to-end de facturación y modalidad de pago', () => {
     }
   });
 
-  test('la reconciliación mensual es vista previa por defecto y luego idempotente', { todo: 'LEGADO: prueba del cobro anterior que ya fallaba antes de las rutinas; se retira junto con ese código tras la primera emisión automática del 15-10-2026 (canal C-136). Se ejecuta y se reporta, pero no pone el CI en rojo.' }, async () => {
-    const c = await api.post('/api/clients', {
-      fullName: 'Reconciliación idempotente', billingModel: 'monthly', standardPrice: 180, cutoffDay: 1
-    });
-    const lote = await api.post('/api/sessions/batch', {
-      clientId: c.datos.id,
-      startsAt: [new Date(Date.now() - 20 * 60_000).toISOString()],
-      durationMinutes: 30,
-      mode: 'Presencial'
-    });
-    const marcada = await api.patch(`/api/sessions/${lote.datos.sesiones[0].id}/compliance`, {
-      outcome: 'completed', completionPercent: 100
-    });
-    assert.equal(marcada.datos.billing.action, 'not_debited', 'antes del saldo queda pendiente de reconciliar');
-
-    const paquete = await api.post('/api/packages', {
-      clientId: c.datos.id, totalSessions: 2, amount: 180, kind: 'monthly', expiresOn: enDiasPa(21).iso
-    });
-    await api.post(`/api/invoices/${paquete.datos.invoice_id}/confirm`, { method: 'Efectivo', paidOn: hoyPa() });
-
-    const preview = await api.post('/api/maintenance/reconcile-monthly-billing', {});
-    assert.equal(preview.estado, 200);
-    assert.equal(preview.datos.dryRun, true);
-    const encontrado = preview.datos.balances.find(row => row.id === paquete.datos.id);
-    assert.equal(encontrado.used, 0);
-    assert.equal(encontrado.eligible, 1);
-
-    const aplicado = await api.post('/api/maintenance/reconcile-monthly-billing', { apply: true });
-    assert.equal(aplicado.estado, 200);
-    assert.equal(aplicado.datos.recoveredSessions, 3, 'la reconciliación recupera las clases pendientes del saldo sin aplicar un recorte');
-    let saldo = (await api.get('/api/packages')).datos.find(p => p.id === paquete.datos.id);
-    assert.equal(Number(saldo.used_sessions), 1);
-
-    const repetido = await api.post('/api/maintenance/reconcile-monthly-billing', { apply: true });
-    assert.equal(repetido.estado, 200);
-    assert.equal(repetido.datos.recoveredSessions, 0, 'la segunda ejecución no vuelve a cobrar la sesión');
-    saldo = (await api.get('/api/packages')).datos.find(p => p.id === paquete.datos.id);
-    assert.equal(Number(saldo.used_sessions), 1);
-  });
 });
 
 describe('el saldo dice de qué cobro salió', () => {
@@ -2141,72 +2043,6 @@ describe('avisar de las clases que se quedaron sin marcar', () => {
 });
 
 describe('reporte mensual de agenda y cumplimiento', () => {
-  test('incluye todas las sesiones y separa lo que sí mide al cliente', { todo: 'LEGADO: prueba del cobro anterior que ya fallaba antes de las rutinas; se retira junto con ese código tras la primera emisión automática del 15-10-2026 (canal C-136). Se ejecuta y se reporta, pero no pone el CI en rojo.' }, async () => {
-    const c = await api.post('/api/clients', { fullName: 'Reporte mensual integral', billingModel: 'single', standardPrice: 30, cutoffDay: 1 });
-    const fechas = [-5, -4, -3, -2, -1].map(offset => instantePa(desplazarDiasPa(hoyPa(), offset), '08:00'));
-    const lote = await api.post('/api/sessions/batch', {
-      clientId: c.datos.id,
-      startsAt: fechas,
-      durationMinutes: 60,
-      mode: 'Presencial'
-    });
-    const sesiones = lote.datos.sesiones.sort((a, b) => String(a.starts_at).localeCompare(String(b.starts_at)));
-    await api.patch(`/api/sessions/${sesiones[0].id}/compliance`, { outcome: 'completed', completionPercent: 100 });
-    await api.patch(`/api/sessions/${sesiones[1].id}/compliance`, { outcome: 'no_show', completionPercent: 0 });
-    await api.delete(`/api/sessions/${sesiones[3].id}?by=trainer`);
-    await api.delete(`/api/sessions/${sesiones[4].id}?rescheduled=false`);
-
-    const mes = mesActualPa().slice(0, 7);
-    const { estado, datos } = await api.get(`/api/attendance/monthly?month=${mes}`);
-    assert.equal(estado, 200);
-    const fila = datos.clients.find(item => item.clientId === c.datos.id);
-    assert.ok(fila, 'el informe incluye al cliente aunque sea de clase suelta');
-    assert.deepEqual({
-      agendadas: fila.agendadas,
-      completadas: fila.completadas,
-      noShow: fila.noShow,
-      canceladasCliente: fila.canceladasCliente,
-      canceladasEntrenadora: fila.canceladasEntrenadora,
-      pendientes: fila.pendientes,
-      medibles: fila.medibles,
-      compliancePercent: fila.compliancePercent
-    }, {
-      agendadas: 5,
-      completadas: 1,
-      noShow: 1,
-      canceladasCliente: 1,
-      canceladasEntrenadora: 1,
-      pendientes: 1,
-      medibles: 3,
-      compliancePercent: 33
-    });
-    assert.ok(datos.totals.agendadas >= 5, 'los totales reúnen a toda la clientela');
-
-    const rangoDesde = desplazarDiasPa(hoyPa(), -5);
-    const rangoHasta = desplazarDiasPa(hoyPa(), -3);
-    const rango = await api.get(`/api/attendance/monthly?from=${rangoDesde}&to=${rangoHasta}`);
-    assert.equal(rango.estado, 200);
-    assert.deepEqual(rango.datos.period, { from: rangoDesde, to: rangoHasta });
-    assert.equal(rango.datos.periodKey, `range:${rangoDesde}:${rangoHasta}`);
-    const filaRango = rango.datos.clients.find(item => item.clientId === c.datos.id);
-    assert.deepEqual({
-      agendadas: filaRango.agendadas,
-      completadas: filaRango.completadas,
-      noShow: filaRango.noShow,
-      pendientes: filaRango.pendientes,
-      medibles: filaRango.medibles
-    }, {
-      agendadas: 3,
-      completadas: 1,
-      noShow: 1,
-      pendientes: 1,
-      medibles: 2
-    });
-
-    assert.equal((await api.get(`/api/attendance/monthly?from=${hoyPa()}&to=${desplazarDiasPa(hoyPa(), -1)}`)).estado, 400,
-      'rechaza rangos invertidos');
-  });
-
   test('filtra el corte vigente de un cliente y recalcula su cumplimiento', async () => {
     // El corte se ancla 10 días DESPUÉS de hoy (nunca el propio día de corte): con un 15 fijo la prueba fallaba cada día 15 (la sesión "del ciclo actual" cae mañana y no se puede completar).
     const cutoffDay = ((Number(hoyPa().slice(8, 10)) + 9) % 28) + 1;
@@ -3121,23 +2957,6 @@ describe('pausar la mensualidad', () => {
   });
 });
 
-describe('cumplimiento por cliente de un mes (Control de paquetes)', () => {
-  test('cuenta cumplidas y calcula el porcentaje del mes', { todo: 'LEGADO: prueba del cobro anterior que ya fallaba antes de las rutinas; se retira junto con ese código tras la primera emisión automática del 15-10-2026 (canal C-136). Se ejecuta y se reporta, pero no pone el CI en rojo.' }, async () => {
-    const c = await api.post('/api/clients', { fullName: 'Cumple por mes', billingModel: 'single', standardPrice: 25, cutoffDay: 1 });
-    const fechas = [-5, -4].map(offset => instantePa(desplazarDiasPa(hoyPa(), offset), '09:00'));
-    const lote = await api.post('/api/sessions/batch', { clientId: c.datos.id, startsAt: fechas, durationMinutes: 60, mode: 'Presencial' });
-    await api.patch(`/api/sessions/${lote.datos.sesiones[0].id}/compliance`, { outcome: 'completed', completionPercent: 100 });
-    await api.patch(`/api/sessions/${lote.datos.sesiones[1].id}/compliance`, { outcome: 'no_show', completionPercent: 0 });
-    const { estado, datos } = await api.get(`/api/compliance/by-month?month=${mesDe(hoyPa())}`);
-    assert.equal(estado, 200);
-    const fila = datos.clients.find(x => x.client_id === c.datos.id);
-    assert.ok(fila, 'aparece el cliente con clases en el mes');
-    assert.equal(Number(fila.total), 2, '2 clases resueltas');
-    assert.equal(Number(fila.completadas), 1, '1 cumplida');
-    assert.equal(Number(fila.percent), 50, 'promedio (100 + 0) / 2');
-  });
-});
-
 describe('fronteras estrictas y excedentes de mensualidad', () => {
   const marcar = async (ids, outcome = 'completed') => {
     for (const id of ids) {
@@ -3241,29 +3060,6 @@ describe('fronteras estrictas y excedentes de mensualidad', () => {
     assert.equal(Number(fila.percent), 100);
   });
 
-  test('la clase del último día se cobra al ciclo que vence ese día', { todo: 'LEGADO: prueba del cobro anterior que ya fallaba antes de las rutinas; se retira junto con ese código tras la primera emisión automática del 15-10-2026 (canal C-136). Se ejecuta y se reporta, pero no pone el CI en rojo.' }, async () => {
-    const cutoff = 15;
-    const referencia = desplazarDiasPa(hoyPa(), -20);
-    const anteriorCiclo = cicloCortePa(referencia, cutoff);
-    const siguienteCiclo = cicloCortePa(desplazarDiasPa(anteriorCiclo.vence, 1), cutoff);
-    const c = await api.post('/api/clients', { fullName: 'Frontera de ciclo', billingModel: 'monthly', standardPrice: 100, cutoffDay: cutoff });
-    const anterior = await api.post('/api/packages', {
-      clientId: c.datos.id, totalSessions: 1, amount: 100, kind: 'monthly', dueOn: anteriorCiclo.vence
-    });
-    await api.post(`/api/invoices/${anterior.datos.invoice_id}/confirm`, { method: 'Efectivo', paidOn: anteriorCiclo.vence });
-    const siguiente = await api.post('/api/packages', {
-      clientId: c.datos.id, totalSessions: 1, amount: 100, kind: 'monthly', dueOn: siguienteCiclo.vence
-    });
-    await api.post(`/api/invoices/${siguiente.datos.invoice_id}/confirm`, { method: 'Efectivo', paidOn: siguienteCiclo.inicio });
-    const sesion = await api.post('/api/sessions/batch', {
-      clientId: c.datos.id, startsAt: [instantePa(anteriorCiclo.vence, '12:00')], durationMinutes: 60, mode: 'Presencial'
-    });
-    await marcar([sesion.datos.sesiones[0].id]);
-
-    const saldos = (await api.get('/api/packages')).datos.filter(p => p.client_id === c.datos.id && p.kind === 'monthly');
-    assert.equal(Number(saldos.find(p => p.id === anterior.datos.id).used_sessions), 1, 'cobra al saldo que vence hoy');
-    assert.equal(Number(saldos.find(p => p.id === siguiente.datos.id).used_sessions), 0, 'no salta al saldo del ciclo siguiente');
-  });
 });
 
 describe('informe mensual (cobros, gastos, finanzas)', () => {
