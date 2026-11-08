@@ -2113,13 +2113,18 @@ app.post('/api/auth/login', async (request, reply) => {
 
 const resetPasswordSchema = z.object({ email: z.string().email(), password: z.string().min(10) });
 app.post('/api/auth/reset-password', async (request, reply) => {
-  // Esta ruta cambia la contraseña de la primera cuenta administradora con
-  // sólo acertar el token, así que es la más golosa de las tres.
-  const esperaReset = await esperaPorAbuso(null, request.ip);
-  if (esperaReset) return respuestaDeEspera(reply, esperaReset);
-  if (request.headers['x-setup-token'] !== config.SETUP_TOKEN) {
-    await registrarIntento('reset-password', null, request.ip, false);
-    return reply.code(403).send({ error: 'Token de recuperación inválido' });
+  // En producción solo superadmin autenticado puede resetear; SETUP_TOKEN queda como fallback para el setup inicial.
+  const hasSuperadmin = !!(await sql`SELECT 1 FROM users WHERE role = 'superadmin' AND active = true LIMIT 1`).length;
+  if (hasSuperadmin) {
+    const auth = await requireAuth(request);
+    if (auth.role !== 'superadmin') return reply.code(403).send({ error: 'Solo superadmin puede resetear contraseñas' });
+  } else {
+    const esperaReset = await esperaPorAbuso(null, request.ip);
+    if (esperaReset) return respuestaDeEspera(reply, esperaReset);
+    if (request.headers['x-setup-token'] !== config.SETUP_TOKEN) {
+      await registrarIntento('reset-password', null, request.ip, false);
+      return reply.code(403).send({ error: 'Token de recuperación inválido' });
+    }
   }
   const input = resetPasswordSchema.parse(request.body);
   const passwordHash = await bcrypt.hash(input.password, 12);
