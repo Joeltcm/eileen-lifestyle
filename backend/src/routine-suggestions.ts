@@ -167,7 +167,7 @@ export async function suggestRoutine(entrada: {
         {
           role: 'user',
           content: [
-            entrada.clienteNombre ? `Cliente: ${entrada.clienteNombre}` : 'Rutina sin cliente asignado todavía.',
+            entrada.clienteNombre ? 'Rutina para un cliente.' : 'Rutina sin cliente asignado todavía.',
             `Lo que pide la entrenadora: ${entrada.descripcion}`,
             '',
             'Rutinas recientes de este cliente:',
