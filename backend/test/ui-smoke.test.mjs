@@ -272,6 +272,7 @@ test('el PORTAL del cliente dibuja todas sus secciones (rutinas con bloques, via
     p.clic(iniciar);
     await esperar(() => p.q('.portal-routine-card [data-timer-display]').textContent !== '00:00', { ms: 7000, mensaje: 'el cronómetro corre después de la cuenta regresiva' });
     p.window.location.hash = '#portal-calendar'; await p.quieta(300);
+    if (!p.q('.portal-col-dia.viaje')) { p.clic(p.q('[data-portal-semana="1"]')); await p.quieta(300); }
     assert.ok(p.q('.portal-col-dia.viaje'), 'los días de viaje en la agenda del cliente');
     sinErrores(p, 'portal del cliente');
   } finally { await p.cerrar(); }
