@@ -157,14 +157,17 @@ export async function planBillingGeneration(tx: Tx, ownerId: string, today = fec
       continue;
     }
     let refEnd = last.cycle_end as string;
-    // CAMBIO DE DÍA DE CORTE: si el cycle_end de la última factura no cae en el día de corte actual, el siguiente ciclo arranca en el nuevo corte, sin micro-ciclo puente.
-    if (kind !== 'paquete') {
+    // PAUSA A MEDIO TÉRMINO (Joel, opción 2): el corte se corre tantos días como duró la pausa; el ciclo sigue donde se detuvo.
+    // Solo para quien paga su propia mensualidad o paquete (la pausa de un beneficiario de familia solo retira su línea mientras dura).
+    const pauseDays = kind !== 'credito' ? await pauseShiftDays(tx, payerId, last.cycle_start as string, last.cycle_end as string) : 0;
+    if (pauseDays > 0) {
+      refEnd = addDays(refEnd, pauseDays);
+    } else if (kind !== 'paquete') {
+      // CAMBIO DE DÍA DE CORTE: si el cycle_end de la última factura no cae en el día de corte actual, el siguiente ciclo arranca en el nuevo corte, sin micro-ciclo puente.
+      // No se aplica cuando hay pausa: shiftCutAfterPause ya movió el corte y recalculó el día.
       const [ceY, ceM] = refEnd.split('-').map(Number);
       if (refEnd !== cutOn(ceY, ceM, payerCutDay)) refEnd = nextCutAfter(refEnd, payerCutDay);
     }
-    // PAUSA A MEDIO TÉRMINO (Joel, opción 2): el corte se corre tantos días como duró la pausa; el ciclo sigue donde se detuvo.
-    // Solo para quien paga su propia mensualidad o paquete (la pausa de un beneficiario de familia solo retira su línea mientras dura).
-    if (kind !== 'credito') refEnd = addDays(refEnd, await pauseShiftDays(tx, payerId, last.cycle_start as string, last.cycle_end as string));
     let referenceInvoiceId = last.id as string; let referenceCode = billingCode(last.number);
     for (let guard = 0; guard < 24; guard += 1) {
       const cycleStart = refEnd;

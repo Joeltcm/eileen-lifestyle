@@ -147,11 +147,11 @@ describe('casos especiales', () => {
 
   test('una persona en pausa o inactiva no se factura', async () => {
     await linea(inactivo, inactivo, 'monthly', 99);
-    await referencia(inactivo, 'mensual', '2026-09-20', '2026-10-20', [[inactivo, 99, 'Mensualidad']]);
+    await referencia(inactivo, 'mensual', '2026-09-15', '2026-10-15', [[inactivo, 99, 'Mensualidad']]);
     await db`UPDATE clients SET status = 'paused' WHERE id = ${inactivo}`;
-    assert.equal((await plan('2026-10-20')).filter(i => i.payerId === inactivo).length, 0);
+    assert.equal((await plan('2026-10-15')).filter(i => i.payerId === inactivo).length, 0);
     await db`UPDATE clients SET status = 'active' WHERE id = ${inactivo}`;
-    assert.equal((await plan('2026-10-20')).find(i => i.payerId === inactivo).status, 'emitir');
+    assert.equal((await plan('2026-10-15')).find(i => i.payerId === inactivo).status, 'emitir');
   });
 
   test('paquete de 35 días (Sara Djamous): el ciclo siguiente empieza donde terminó el anterior', async () => {

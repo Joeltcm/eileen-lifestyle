@@ -91,7 +91,9 @@ test('confirmar la rutina por enlace el día de la clase en viaje la cuenta como
   const segunda = await publico.post(`/api/public/routine/${token}/complete`, { completionPercent: 100 });
   assert.equal(segunda.datos.sessionCompleted, false, 'la segunda confirmación del día no cierra otra clase');
   const aviso = (await api.get('/api/notifications')).datos.filter(a => a.type === 'routine');
-  assert.equal(aviso.length, 1); assert.match(aviso[0].title, /Sara Viajera/);
+  assert.equal(aviso.length, 2, `esperaba 2 avisos de rutina (viewed + completed), hay ${aviso.length}`);
+  assert.ok(aviso.some(a => /Rutina completada/.test(a.title) && /Sara Viajera/.test(a.title)), 'uno es la rutina completada');
+  assert.ok(aviso.some(a => /Rutina abierta/.test(a.title) && /Sara Viajera/.test(a.title)), 'el otro es la vista (viewed) al abrir el enlace');
   assert.equal((await publico.post(`/api/public/routine/${token}/complete`, { completionPercent: 0 })).estado, 400);
   // Sin viaje ese día, la confirmación no cierra ninguna clase.
   await api.delete(`/api/travel/${viaje}`);

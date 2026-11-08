@@ -105,6 +105,14 @@ describe('autenticación', () => {
     assert.equal(inexistente.estado, 401);
     assert.equal(malo.datos.error, inexistente.datos.error, 'el mensaje no debe delatar la cuenta');
   });
+
+  test('promover a superadmin para las pruebas de auditoría y diagnósticos', async () => {
+    await db`UPDATE users SET role = 'superadmin' WHERE email = ${CREDENCIALES.email}`;
+    const { estado, datos } = await api.post('/api/auth/login', { email: CREDENCIALES.email, password: CREDENCIALES.password });
+    assert.equal(estado, 200);
+    assert.equal(datos.user.role, 'superadmin');
+    api.usarToken(datos.token);
+  });
 });
 
 describe('freno a la fuerza bruta', () => {
