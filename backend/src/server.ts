@@ -11127,7 +11127,7 @@ async function enlaceDeRutina(token: string) {
     SELECT l.*, r.title, r.description, r.exercises, c.full_name, c.owner_id AS client_owner_id, c.portal_user_id, c.status AS client_status, c.service_mode, c.billing_cutoff_day, c.monthly_session_target, p.service_type, p.routines_per_month,
       ra.id AS assignment_id, ra.entitlement_id AS assignment_entitlement_id, ra.starts_on AS assignment_starts_on, ra.due_on AS assignment_due_on, ra.ends_on AS assignment_ends_on
     FROM routine_share_links l JOIN routines r ON r.id = l.routine_id JOIN clients c ON c.id = l.client_id LEFT JOIN service_plans p ON p.id = c.plan_id
-    LEFT JOIN LATERAL (SELECT id, entitlement_id, starts_on, due_on, ends_on FROM routine_assignments a WHERE a.routine_id = l.routine_id AND a.client_id = l.client_id AND a.active = true ORDER BY a.starts_on DESC LIMIT 1) ra ON true
+    LEFT JOIN LATERAL (SELECT id, entitlement_id, starts_on, due_on, ends_on FROM routine_assignments a WHERE a.client_id = l.client_id AND a.active = true AND (a.routine_id = l.routine_id OR a.routine_id IN (SELECT v.id FROM routines v WHERE v.root_routine_id = COALESCE(r.root_routine_id, r.id))) ORDER BY a.starts_on DESC LIMIT 1) ra ON true
     WHERE l.token_hash = ${hashToken(token)}`;
   if (!fila) return { estado: 'desconocido' as const };
   if (fila.revoked_at) return { estado: 'revocado' as const };
