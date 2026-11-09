@@ -11160,6 +11160,7 @@ async function ejerciciosDeLaRutina(ownerId: string, ejercicios: unknown) {
 
 // TEMP DEBUG — remove after diagnosing Allan's link
 app.get('/api/debug/link-inspect/:token', async (request, reply) => {
+  try {
   void reply.header('Cache-Control', 'no-store');
   const token = String((request.params as { token: string }).token);
   if (!/^[A-Za-z0-9_-]{30,80}$/.test(token)) return reply.code(400).send({ error: 'bad token' });
@@ -11176,6 +11177,7 @@ app.get('/api/debug/link-inspect/:token', async (request, reply) => {
   const today = fechaDeNegocioPanama();
   const enlaceVencido = new Date(fila.expires_at as string).getTime() <= Date.now();
   return reply.send({ link: fila, allAssignments, versions, today, enlaceVencido, nowMs: Date.now(), expiresAtMs: new Date(fila.expires_at as string).getTime() });
+  } catch (err) { return reply.code(500).send({ error: String(err), stack: (err as Error).stack }); }
 });
 
 app.get('/api/public/routine/:token', async (request, reply) => {
