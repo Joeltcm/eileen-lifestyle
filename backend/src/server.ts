@@ -11172,8 +11172,8 @@ app.get('/api/debug/link-inspect/:token', async (request, reply) => {
     LEFT JOIN LATERAL (SELECT id, entitlement_id, starts_on, due_on, ends_on FROM routine_assignments a WHERE a.client_id = l.client_id AND a.active = true AND (a.routine_id = l.routine_id OR a.routine_id IN (SELECT v.id FROM routines v WHERE v.root_routine_id = COALESCE(r.root_routine_id, r.id))) ORDER BY a.starts_on DESC LIMIT 1) ra ON true
     WHERE l.token_hash = ${hashToken(token)}`;
   if (!fila) return reply.code(404).send({ error: 'not found' });
-  const allAssignments = await sql`SELECT id, routine_id, active, starts_on, due_on, ends_on, entitlement_id FROM routine_assignments WHERE client_id = ${fila.client_id} AND active = true ORDER BY starts_on DESC`;
-  const versions = await sql`SELECT id, root_routine_id, title FROM routines WHERE root_routine_id = COALESCE(${fila.root_routine_id}, ${fila.routine_id}) OR id = ${fila.routine_id}`;
+  const allAssignments = await sql`SELECT id, routine_id, active, starts_on, due_on, ends_on, entitlement_id FROM routine_assignments WHERE client_id = ${String(fila.client_id)}::uuid AND active = true ORDER BY starts_on DESC`;
+  const versions = await sql`SELECT id, root_routine_id, title FROM routines WHERE root_routine_id = COALESCE(${String(fila.root_routine_id ?? '')}::uuid, ${String(fila.routine_id)}::uuid) OR id = ${String(fila.routine_id)}::uuid`;
   const today = fechaDeNegocioPanama();
   const enlaceVencido = new Date(fila.expires_at as string).getTime() <= Date.now();
   return reply.send({ link: fila, allAssignments, versions, today, enlaceVencido, nowMs: Date.now(), expiresAtMs: new Date(fila.expires_at as string).getTime() });
