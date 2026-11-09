@@ -2079,7 +2079,7 @@ app.post('/api/auth/setup', async (request, reply) => {
   }
   const input = setupSchema.parse(request.body);
   const passwordHash = await bcrypt.hash(input.password, 12);
-  const user = await sql.begin('serializable', async tx => {
+  const user = await sql.begin('isolation level serializable', async tx => {
     const [{ count }] = await tx`SELECT count(*)::integer AS count FROM users`;
     if (count > 0) return null;
     const [u] = await tx`
@@ -11131,8 +11131,12 @@ async function enlaceDeRutina(token: string) {
     WHERE l.token_hash = ${hashToken(token)}`;
   if (!fila) return { estado: 'desconocido' as const };
   if (fila.revoked_at) return { estado: 'revocado' as const };
-  if (new Date(fila.expires_at as string).getTime() <= Date.now()) return { estado: 'expirado' as const };
   const today = fechaDeNegocioPanama();
+  const enlaceVencido = new Date(fila.expires_at as string).getTime() <= Date.now();
+  if (enlaceVencido) {
+    const dueFecha = fechaDbTexto(fila.assignment_due_on);
+    if (!dueFecha || dueFecha < today) return { estado: 'expirado' as const };
+  }
   // El vencimiento de la asignación gobierna los enlaces de planes de rutinas.
   // Los enlaces de mensualidad, demo o viaje conservan su vigencia propia aunque
   // la asignación original se haya reemplazado por una versión nueva.
