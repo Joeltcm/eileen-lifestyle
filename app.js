@@ -1,4 +1,4 @@
-const APP_VERSION = '356';
+const APP_VERSION = '357';
 const markPwaVersion = () => document.querySelectorAll('.topbar-actions').forEach(actions => {
   if (actions.querySelector('[data-pwa-version]')) return;
   const indicator = document.createElement('span');
@@ -314,7 +314,7 @@ async function api(path, options = {}) {
   if (clave && peticionesEnVuelo.has(clave)) return peticionesEnVuelo.get(clave);
 
   const enCurso = (async () => {
-    const response = await fetch(`${API_BASE}${path}`, { method: metodo, headers, body: options.body === undefined || isPassThroughBody ? options.body : JSON.stringify(options.body) });
+    const response = await fetch(`${API_BASE}${path}`, { method: metodo, headers, cache: options.auth === false ? 'no-store' : undefined, body: options.body === undefined || isPassThroughBody ? options.body : JSON.stringify(options.body) });
     const payload = await response.json().catch(() => ({}));
     if (!response.ok) {
       if (response.status === 401 && options.auth !== false) { localStorage.removeItem(authKey); authToken = null; }
