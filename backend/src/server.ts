@@ -11142,7 +11142,10 @@ async function enlaceDeRutina(token: string) {
   // la asignación original se haya reemplazado por una versión nueva.
   if (isWindowedAssignment(fila as Record<string, unknown>) && !fila.assignment_starts_on) return { estado: 'sin_asignacion' as const };
   if (isWindowedAssignment(fila as Record<string, unknown>) && fechaDbTexto(fila.assignment_starts_on)! > today) return { estado: 'pendiente' as const };
-  if (isWindowedAssignment(fila as Record<string, unknown>) && !routineAssignmentIsAvailable(fila as Record<string, unknown>)) return { estado: 'expirado' as const };
+  // Para enlaces públicos usamos due_on directo, no el effectiveDueOn del ciclo,
+  // porque el ciclo puede capar la fecha si starts_on cayó en el ciclo anterior.
+  const dueDirect = fechaDbTexto(fila.assignment_due_on);
+  if (isWindowedAssignment(fila as Record<string, unknown>) && dueDirect && dueDirect < today) return { estado: 'expirado' as const };
   return { estado: 'ok' as const, fila };
 }
 const mensajeEnlace = { desconocido: 'Este enlace no existe.', revocado: 'Eileen retiró este enlace.', expirado: 'Este enlace ya venció. Pídele uno nuevo a Eileen.', sin_asignacion: 'Esta rutina ya no está asignada.', pendiente: 'Esta rutina todavía no está disponible. Vuelve a abrir el enlace en su fecha de inicio.' };
@@ -11157,28 +11160,6 @@ async function ejerciciosDeLaRutina(ownerId: string, ejercicios: unknown) {
       (EXISTS (SELECT 1 FROM exercise_videos ev WHERE ev.exercise_id = e.id) OR e.video_object_key IS NOT NULL) AS has_video
     FROM exercises e WHERE e.owner_id = ${ownerId} AND NOT e.archived AND (e.id::text = ANY(${ids}) OR e.slug = ANY(${ids}))`;
 }
-
-// TEMP DEBUG — remove after diagnosing Allan's link
-app.get('/api/debug/link-inspect/:token', async (request, reply) => {
-  try {
-  void reply.header('Cache-Control', 'no-store');
-  const token = String((request.params as { token: string }).token);
-  if (!/^[A-Za-z0-9_-]{30,80}$/.test(token)) return reply.code(400).send({ error: 'bad token' });
-  const [fila] = await sql`
-    SELECT l.id, l.routine_id, l.client_id, l.expires_at, l.revoked_at, r.root_routine_id, r.title,
-      ra.id AS ra_id, ra.starts_on AS ra_starts_on, ra.due_on AS ra_due_on, ra.ends_on AS ra_ends_on, ra.entitlement_id AS ra_entitlement_id,
-      c.service_mode, c.billing_cutoff_day, c.monthly_session_target, p.service_type, p.routines_per_month
-    FROM routine_share_links l JOIN routines r ON r.id = l.routine_id JOIN clients c ON c.id = l.client_id LEFT JOIN service_plans p ON p.id = c.plan_id
-    LEFT JOIN LATERAL (SELECT id, entitlement_id, starts_on, due_on, ends_on FROM routine_assignments a WHERE a.client_id = l.client_id AND a.active = true AND (a.routine_id = l.routine_id OR a.routine_id IN (SELECT v.id FROM routines v WHERE v.root_routine_id = COALESCE(r.root_routine_id, r.id))) ORDER BY a.starts_on DESC LIMIT 1) ra ON true
-    WHERE l.token_hash = ${hashToken(token)}`;
-  if (!fila) return reply.code(404).send({ error: 'not found' });
-  const allAssignments = await sql`SELECT id, routine_id, active, starts_on, due_on, ends_on, entitlement_id FROM routine_assignments WHERE client_id = ${String(fila.client_id)}::uuid AND active = true ORDER BY starts_on DESC`;
-  const versions = await sql`SELECT id, root_routine_id, title FROM routines WHERE root_routine_id = COALESCE(${String(fila.root_routine_id ?? '')}::uuid, ${String(fila.routine_id)}::uuid) OR id = ${String(fila.routine_id)}::uuid`;
-  const today = fechaDeNegocioPanama();
-  const enlaceVencido = new Date(fila.expires_at as string).getTime() <= Date.now();
-  return reply.send({ link: fila, allAssignments, versions, today, enlaceVencido, nowMs: Date.now(), expiresAtMs: new Date(fila.expires_at as string).getTime() });
-  } catch (err) { return reply.code(500).send({ error: String(err), stack: (err as Error).stack }); }
-});
 
 app.get('/api/public/routine/:token', async (request, reply) => {
   void reply.header('Cache-Control', 'no-store');
