@@ -11159,6 +11159,7 @@ async function ejerciciosDeLaRutina(ownerId: string, ejercicios: unknown) {
 }
 
 app.get('/api/public/routine/:token', async (request, reply) => {
+  void reply.header('Cache-Control', 'no-store');
   if (demasiadasVisitas(request)) return reply.code(429).send({ error: 'Demasiados intentos. Espera un minuto.' });
   const encontrado = await enlaceDeRutina(String((request.params as { token: string }).token));
   if (encontrado.estado !== 'ok') return reply.code(encontrado.estado === 'desconocido' ? 404 : 410).send({ error: mensajeEnlace[encontrado.estado] });
@@ -11190,6 +11191,7 @@ app.get('/api/public/routine/:token', async (request, reply) => {
 });
 
 app.get('/api/public/routine/:token/exercises/:exerciseId/video-urls', async (request, reply) => {
+  void reply.header('Cache-Control', 'no-store');
   if (demasiadasVisitas(request)) return reply.code(429).send({ error: 'Demasiados intentos. Espera un minuto.' });
   if (!storageReady) return reply.code(503).send({ error: 'El almacenamiento de video aún no está configurado' });
   const params = request.params as { token: string; exerciseId: string };
@@ -11215,6 +11217,7 @@ app.get('/api/public/routine/:token/exercises/:exerciseId/video-urls', async (re
 });
 
 app.post('/api/public/routine/:token/complete', async (request, reply) => {
+  void reply.header('Cache-Control', 'no-store');
   if (demasiadasVisitas(request)) return reply.code(429).send({ error: 'Demasiados intentos. Espera un minuto.' });
   const encontrado = await enlaceDeRutina(String((request.params as { token: string }).token));
   if (encontrado.estado !== 'ok') return reply.code(encontrado.estado === 'desconocido' ? 404 : 410).send({ error: mensajeEnlace[encontrado.estado] });
