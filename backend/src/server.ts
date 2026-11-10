@@ -11144,8 +11144,12 @@ async function enlaceDeRutina(token: string) {
   if (isWindowedAssignment(fila as Record<string, unknown>) && fechaDbTexto(fila.assignment_starts_on)! > today) return { estado: 'pendiente' as const };
   // Para enlaces públicos usamos due_on directo, no el effectiveDueOn del ciclo,
   // porque el ciclo puede capar la fecha si starts_on cayó en el ciclo anterior.
-  const dueDirect = fechaDbTexto(fila.assignment_due_on);
-  if (isWindowedAssignment(fila as Record<string, unknown>) && dueDirect && dueDirect < today) return { estado: 'expirado' as const };
+  if (isWindowedAssignment(fila as Record<string, unknown>)) {
+    const dueDirect = fechaDbTexto(fila.assignment_due_on);
+    const endsOn = fechaDbTexto(fila.assignment_ends_on);
+    if (!dueDirect || dueDirect < today) return { estado: 'expirado' as const };
+    if (endsOn && endsOn < today) return { estado: 'expirado' as const };
+  }
   return { estado: 'ok' as const, fila };
 }
 const mensajeEnlace = { desconocido: 'Este enlace no existe.', revocado: 'Eileen retiró este enlace.', expirado: 'Este enlace ya venció. Pídele uno nuevo a Eileen.', sin_asignacion: 'Esta rutina ya no está asignada.', pendiente: 'Esta rutina todavía no está disponible. Vuelve a abrir el enlace en su fecha de inicio.' };
