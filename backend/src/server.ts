@@ -11130,6 +11130,7 @@ async function enlaceDeRutina(token: string) {
     LEFT JOIN LATERAL (SELECT id, entitlement_id, starts_on, due_on, ends_on FROM routine_assignments a WHERE a.client_id = l.client_id AND a.active = true AND (a.routine_id = l.routine_id OR a.routine_id IN (SELECT v.id FROM routines v WHERE v.root_routine_id = COALESCE(r.root_routine_id, r.id))) ORDER BY a.starts_on DESC LIMIT 1) ra ON true
     WHERE l.token_hash = ${hashToken(token)}`;
   if (!fila) return { estado: 'desconocido' as const };
+  if (fila.client_status !== 'active') return { estado: 'inhabilitado' as const };
   if (fila.revoked_at) return { estado: 'revocado' as const };
   const today = fechaDeNegocioPanama();
   const enlaceVencido = new Date(fila.expires_at as string).getTime() <= Date.now();
@@ -11152,7 +11153,7 @@ async function enlaceDeRutina(token: string) {
   }
   return { estado: 'ok' as const, fila };
 }
-const mensajeEnlace = { desconocido: 'Este enlace no existe.', revocado: 'Eileen retiró este enlace.', expirado: 'Este enlace ya venció. Pídele uno nuevo a Eileen.', sin_asignacion: 'Esta rutina ya no está asignada.', pendiente: 'Esta rutina todavía no está disponible. Vuelve a abrir el enlace en su fecha de inicio.' };
+const mensajeEnlace = { desconocido: 'Este enlace no existe.', inhabilitado: 'Tu cuenta está inhabilitada. Ponte en contacto con Eileen.', revocado: 'Eileen retiró este enlace.', expirado: 'Este enlace ya venció. Pídele uno nuevo a Eileen.', sin_asignacion: 'Esta rutina ya no está asignada.', pendiente: 'Esta rutina todavía no está disponible. Vuelve a abrir el enlace en su fecha de inicio.' };
 
 // Ejercicios del catálogo que aparecen en la rutina (por id o por el slug antiguo), con la marca de si tienen video.
 async function ejerciciosDeLaRutina(ownerId: string, ejercicios: unknown) {
@@ -11169,7 +11170,7 @@ app.get('/api/public/routine/:token', async (request, reply) => {
   void reply.header('Cache-Control', 'no-store');
   if (demasiadasVisitas(request)) return reply.code(429).send({ error: 'Demasiados intentos. Espera un minuto.' });
   const encontrado = await enlaceDeRutina(String((request.params as { token: string }).token));
-  if (encontrado.estado !== 'ok') return reply.code(encontrado.estado === 'desconocido' ? 404 : 410).send({ error: mensajeEnlace[encontrado.estado] });
+  if (encontrado.estado !== 'ok') return reply.code(encontrado.estado === 'desconocido' ? 404 : encontrado.estado === 'inhabilitado' ? 403 : 410).send({ error: mensajeEnlace[encontrado.estado] });
   const fila = encontrado.fila;
   await sql`UPDATE routine_share_links SET opens = opens + 1, last_opened_at = now() WHERE id = ${fila.id} AND (last_opened_at IS NULL OR last_opened_at < now() - interval '1 minute')`;
   const [hoyFila] = await sql`SELECT (now() AT TIME ZONE 'America/Panama')::date::text AS hoy`;
@@ -11203,7 +11204,7 @@ app.get('/api/public/routine/:token/exercises/:exerciseId/video-urls', async (re
   if (!storageReady) return reply.code(503).send({ error: 'El almacenamiento de video aún no está configurado' });
   const params = request.params as { token: string; exerciseId: string };
   const encontrado = await enlaceDeRutina(params.token);
-  if (encontrado.estado !== 'ok') return reply.code(encontrado.estado === 'desconocido' ? 404 : 410).send({ error: mensajeEnlace[encontrado.estado] });
+  if (encontrado.estado !== 'ok') return reply.code(encontrado.estado === 'desconocido' ? 404 : encontrado.estado === 'inhabilitado' ? 403 : 410).send({ error: mensajeEnlace[encontrado.estado] });
   const ejercicioId = z.string().uuid().parse(params.exerciseId);
   // Solo los ejercicios de ESTA rutina: el enlace no da acceso al resto del catálogo.
   const permitidos = await ejerciciosDeLaRutina(String(encontrado.fila.owner_id), encontrado.fila.exercises);
@@ -11227,7 +11228,7 @@ app.post('/api/public/routine/:token/complete', async (request, reply) => {
   void reply.header('Cache-Control', 'no-store');
   if (demasiadasVisitas(request)) return reply.code(429).send({ error: 'Demasiados intentos. Espera un minuto.' });
   const encontrado = await enlaceDeRutina(String((request.params as { token: string }).token));
-  if (encontrado.estado !== 'ok') return reply.code(encontrado.estado === 'desconocido' ? 404 : 410).send({ error: mensajeEnlace[encontrado.estado] });
+  if (encontrado.estado !== 'ok') return reply.code(encontrado.estado === 'desconocido' ? 404 : encontrado.estado === 'inhabilitado' ? 403 : 410).send({ error: mensajeEnlace[encontrado.estado] });
   const fila = encontrado.fila;
   const input = z.object({ completionPercent: z.coerce.number().int().min(1).max(100).default(100), durationSeconds: z.coerce.number().int().min(1).max(21600).optional(), runNumber: z.coerce.number().int().min(1).max(999).optional() }).parse(request.body ?? {});
   const [hoyFila] = await sql`SELECT (now() AT TIME ZONE 'America/Panama')::date::text AS hoy`;
