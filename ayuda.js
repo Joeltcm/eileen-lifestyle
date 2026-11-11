@@ -74,6 +74,13 @@ const pwaGuide = {
 // Las correcciones pequeñas que nadie nota no necesitan entrada. Los nombres de pantallas y botones van entre «comillas angulares».
 const whatsNewReleases = [
   {
+    id: '2026-11-10-enlaces-y-bloqueo', version: 358, date: '10-11-2026', title: 'Enlaces de rutinas y control de acceso',
+    items: [
+      { icon: '🔗', title: 'Enlaces de rutinas reparados', text: 'Los enlaces enviados por WhatsApp ahora funcionan aunque el enlace técnico haya vencido, siempre que la fecha límite de la rutina siga vigente. También funcionan si editaste la rutina después de enviar el enlace.' },
+      { icon: '🚫', title: 'Bloquear acceso a un cliente', text: 'Puedes marcar un cliente como Inactivo desde su expediente para cortarle el acceso a las rutinas hasta que pague. Cuando lo reactives, los mismos enlaces vuelven a funcionar sin tener que reenviarlos.' }
+    ]
+  },
+  {
     id: '2026-11-06-seguridad-ia-auditoria', version: 352, date: '06-11-2026', title: 'Seguridad y protección de IA',
     items: [
       { icon: '🔐', title: 'Auditoría restringida', text: 'El registro de auditoría ahora solo es visible para el administrador principal, protegiendo la privacidad de las acciones registradas.' },
